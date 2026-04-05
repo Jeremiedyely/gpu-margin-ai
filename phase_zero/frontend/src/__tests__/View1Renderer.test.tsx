@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { View1Renderer, deriveAnalyzeControl, SLOT_LABELS } from "../components/View1Renderer";
+import { View1Renderer, deriveAnalyzeControl } from "../components/View1Renderer";
 
 describe("deriveAnalyzeControl", () => {
   // V1-01: EMPTY → LOCKED

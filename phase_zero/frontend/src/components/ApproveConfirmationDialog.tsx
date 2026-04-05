@@ -6,8 +6,6 @@
  * On confirm → sends transition request to backend.
  */
 
-import { useState } from "react";
-
 interface ApproveDialogProps {
   sessionId: string;
   onConfirm: () => void;

@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import type { ApproveControl, ExportControl, View2FooterState } from "@/types/api";
+import type { View2FooterState } from "@/types/api";
 import { ApproveConfirmationDialog } from "./ApproveConfirmationDialog";
 
 interface View2FooterProps {

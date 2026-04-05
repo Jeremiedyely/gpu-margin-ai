@@ -7,29 +7,29 @@ on:
     branches: [master]
 
 env:
-  SA_PASSWORD: "Ci_Test_Pwd_99!"
-  TEST_DATABASE_URL: "mssql+pyodbc://sa:Ci_Test_Pwd_99!@localhost:1433/gpu_margin?driver=ODBC+Driver+17+for+SQL+Server&encrypt=no"
+  SA_PASSWORD: CiTestPwd99strong
+  TEST_DATABASE_URL: "mssql+pyodbc://sa:CiTestPwd99strong@localhost:1433/gpu_margin?driver=ODBC+Driver+17+for+SQL+Server&encrypt=no"
 
 jobs:
   # ── Backend: pytest against real MSSQL ──────────────────────────
   backend:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     services:
       mssql:
         image: mcr.microsoft.com/mssql/server:2022-latest
         env:
           ACCEPT_EULA: "Y"
-          SA_PASSWORD: "Ci_Test_Pwd_99!"
+          SA_PASSWORD: CiTestPwd99strong
           MSSQL_PID: Developer
         ports:
           - 1433:1433
         options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Ci_Test_Pwd_99!' -Q 'SELECT 1' -C -b -o /dev/null"
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P CiTestPwd99strong -Q 'SELECT 1' -C -b"
           --health-interval 10s
           --health-timeout 5s
-          --health-retries 10
-          --health-start-period 30s
+          --health-retries 15
+          --health-start-period 40s
 
     steps:
       - uses: actions/checkout@v4
@@ -37,13 +37,21 @@ jobs:
       - name: Install ODBC Driver 17
         run: |
           curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/22.04/prod jammy main" | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          curl -fsSL https://packages.microsoft.com/config/ubuntu/22.04/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
           sudo apt-get update
           sudo ACCEPT_EULA=Y apt-get install -y msodbcsql17 unixodbc-dev
 
+      - name: Wait for MSSQL to accept connections
+        run: |
+          for i in $(seq 1 30); do
+            sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -Q "SELECT 1" > /dev/null 2>&1 && echo "MSSQL ready" && break
+            echo "Waiting for MSSQL ($i/30)..."
+            sleep 2
+          done
+
       - name: Create gpu_margin database
         run: |
-          /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -Q "CREATE DATABASE gpu_margin;"
+          sqlcmd -S localhost -U sa -P "$SA_PASSWORD" -C -Q "CREATE DATABASE gpu_margin;"
 
       - name: Run Flyway migrations
         run: |
@@ -70,7 +78,7 @@ jobs:
         working-directory: phase_zero
         run: python -m pytest tests/ -v --tb=short
 
-  # ── Frontend: vitest ────────────────────────────────────────────
+  # ── Frontend: vitest + tsc ──────────────────────────────────────
   frontend:
     runs-on: ubuntu-latest
 
