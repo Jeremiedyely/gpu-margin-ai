@@ -33,11 +33,19 @@ function deriveFooterState(appState: "ANALYZED" | "APPROVED"): View2FooterState 
   };
 }
 
+const ExportIcon = (
+  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+  </svg>
+);
+
 export function View2FooterControlManager({
   applicationState,
   sessionId,
 }: View2FooterProps) {
   const [showDialog, setShowDialog] = useState(false);
+  const [exporting, setExporting] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
   const footer = deriveFooterState(applicationState);
 
   const handleApproveClick = () => {
@@ -62,51 +70,140 @@ export function View2FooterControlManager({
     }
   };
 
+  const handleExport = async (format: "csv" | "excel" | "power_bi") => {
+    setExporting(format);
+    try {
+      const res = await fetch(`/api/export/${sessionId}/${format}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const detail = body?.detail;
+        const message = typeof detail === "string" ? detail : JSON.stringify(detail) || `Export failed: ${res.status}`;
+        alert(message);
+        return;
+      }
+      // Trigger browser download
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const filenameMatch = disposition.match(/filename="?([^"]+)"?/);
+      const filename = filenameMatch?.[1] || `gpu_margin_export.${format === "excel" ? "xlsx" : format === "power_bi" ? "txt" : "csv"}`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(`Export error: ${err}`);
+    } finally {
+      setExporting(null);
+    }
+  };
+
   return (
     <>
       <div
-        className="border-t pt-6 flex gap-4 items-center"
+        className="bg-white rounded-2xl shadow-md border border-slate-100 p-5"
         data-testid="view2-footer"
       >
-        {/* Approve button */}
-        <button
-          className={`px-6 py-3 rounded-lg font-semibold text-white ${
-            footer.approve_control === "ACTIVE"
-              ? "bg-blue-600 hover:bg-blue-700 cursor-pointer"
-              : "bg-gray-300 cursor-not-allowed"
-          }`}
-          disabled={footer.approve_control !== "ACTIVE"}
-          onClick={handleApproveClick}
-          data-testid="approve-button"
-          data-control={footer.approve_control}
-        >
-          {footer.approve_control === "DEACTIVATED" ? "Approved" : "Approve"}
-        </button>
+        <div className="flex gap-3 items-center flex-wrap">
+          {/* Approve button */}
+          <button
+            className={`px-6 py-2.5 rounded-xl font-semibold text-sm text-white transition-all ${
+              footer.approve_control === "ACTIVE"
+                ? "bg-blue-500 hover:bg-blue-600 hover:-translate-y-0.5 shadow-md cursor-pointer"
+                : footer.approve_control === "DEACTIVATED"
+                  ? "bg-emerald-500 cursor-default"
+                  : "bg-slate-300 cursor-not-allowed"
+            }`}
+            disabled={footer.approve_control !== "ACTIVE"}
+            onClick={handleApproveClick}
+            data-testid="approve-button"
+            data-control={footer.approve_control}
+          >
+            {footer.approve_control === "DEACTIVATED" ? (
+              <span className="flex items-center gap-1.5">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" strokeWidth="2.5" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" />
+                </svg>
+                Approved
+              </span>
+            ) : "Approve"}
+          </button>
 
-        <div className="border-l h-8 mx-2" />
+          <div className="w-px h-8 bg-slate-200 mx-1" />
 
-        {/* Export buttons */}
-        {(["csv_control", "excel_control", "power_bi_control"] as const).map(
-          (key) => {
-            const label = key === "csv_control" ? "CSV" : key === "excel_control" ? "Excel" : "Power BI";
-            const isActive = footer[key] === "ACTIVE";
-            return (
+          {/* New Session button — only when APPROVED */}
+          {applicationState === "APPROVED" && (
+            <>
               <button
-                key={key}
-                className={`px-4 py-2 rounded-lg text-sm font-medium ${
-                  isActive
-                    ? "bg-green-600 text-white hover:bg-green-700 cursor-pointer"
-                    : "bg-gray-200 text-gray-400 cursor-not-allowed"
+                className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                  closing
+                    ? "bg-slate-200 text-slate-400 cursor-not-allowed"
+                    : "bg-indigo-500 text-white hover:bg-indigo-600 hover:-translate-y-0.5 shadow-md cursor-pointer"
                 }`}
-                disabled={!isActive}
-                data-testid={`export-${label.toLowerCase().replace(" ", "-")}`}
-                data-control={footer[key]}
+                disabled={closing}
+                onClick={async () => {
+                  setClosing(true);
+                  try {
+                    await fetch("/api/session/close", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ session_id: sessionId }),
+                    });
+                  } catch (err) {
+                    alert(`Close failed: ${err}`);
+                  } finally {
+                    setClosing(false);
+                  }
+                }}
+                data-testid="new-session-button"
               >
-                Export {label}
+                {closing ? "Closing..." : (
+                  <span className="flex items-center gap-1.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                    </svg>
+                    New Session
+                  </span>
+                )}
               </button>
-            );
-          }
-        )}
+              <div className="w-px h-8 bg-slate-200 mx-1" />
+            </>
+          )}
+
+          {/* Export buttons */}
+          {(["csv_control", "excel_control", "power_bi_control"] as const).map(
+            (key) => {
+              const label = key === "csv_control" ? "CSV" : key === "excel_control" ? "Excel" : "Power BI";
+              const format = key === "csv_control" ? "csv" : key === "excel_control" ? "excel" : "power_bi";
+              const isActive = footer[key] === "ACTIVE";
+              const isExporting = exporting === format;
+              return (
+                <button
+                  key={key}
+                  className={`px-4 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                    isActive && !isExporting
+                      ? "bg-emerald-500 text-white hover:bg-emerald-600 hover:-translate-y-0.5 shadow-md cursor-pointer"
+                      : "bg-slate-200 text-slate-400 cursor-not-allowed"
+                  }`}
+                  disabled={!isActive || isExporting}
+                  onClick={() => handleExport(format as "csv" | "excel" | "power_bi")}
+                  data-testid={`export-${label.toLowerCase().replace(" ", "-")}`}
+                  data-control={footer[key]}
+                >
+                  {isExporting ? "Exporting..." : (
+                    <span className="flex items-center gap-1.5">
+                      {ExportIcon}
+                      {label}
+                    </span>
+                  )}
+                </button>
+              );
+            }
+          )}
+        </div>
       </div>
 
       {showDialog && (

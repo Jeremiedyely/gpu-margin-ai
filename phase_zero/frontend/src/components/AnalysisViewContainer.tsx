@@ -12,6 +12,8 @@ import { useKPI } from "@/hooks/useKPI";
 import { useCustomers } from "@/hooks/useCustomers";
 import { useRegions } from "@/hooks/useRegions";
 import { useReconciliation } from "@/hooks/useReconciliation";
+import { AppHeader } from "./AppHeader";
+import { ProgressStepper } from "./ProgressStepper";
 import { Zone1KPIRenderer } from "./Zone1KPIRenderer";
 import { Zone2LRegionRenderer } from "./Zone2LRegionRenderer";
 import { Zone2RCustomerRenderer } from "./Zone2RCustomerRenderer";
@@ -32,40 +34,50 @@ export function AnalysisViewContainer({
   const regions = useRegions(sessionId);
   const reconciliation = useReconciliation(sessionId);
 
+  const currentStep = applicationState === "APPROVED" ? 4 : 3;
+
   return (
-    <div className="space-y-6" data-testid="analysis-view">
-      {/* Zone 1 — KPI cards */}
-      <Zone1KPIRenderer
-        data={kpi.data}
-        isLoading={kpi.isLoading}
-        isError={kpi.isError}
-      />
+    <div className="min-h-screen bg-slate-50">
+      <AppHeader sessionId={sessionId} />
 
-      {/* Zone 2 — Region (left) + Customer (right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Zone2LRegionRenderer
-          data={regions.data?.payload}
-          isLoading={regions.isLoading}
-        />
-        <Zone2RCustomerRenderer
-          data={customers.data?.payload}
-          isLoading={customers.isLoading}
-        />
+      <div className="max-w-7xl mx-auto px-6 lg:px-10 py-7">
+        <ProgressStepper currentStep={currentStep as 3 | 4} />
+
+        <div className="space-y-5" data-testid="analysis-view">
+          {/* Zone 1 — KPI cards */}
+          <Zone1KPIRenderer
+            data={kpi.data}
+            isLoading={kpi.isLoading}
+            isError={kpi.isError}
+          />
+
+          {/* Zone 2 — Region (left) + Customer (right) */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            <Zone2LRegionRenderer
+              data={regions.data?.payload}
+              isLoading={regions.isLoading}
+            />
+            <Zone2RCustomerRenderer
+              data={customers.data?.payload}
+              isLoading={customers.isLoading}
+            />
+          </div>
+
+          {/* Zone 3 — Reconciliation verdicts */}
+          <Zone3ReconciliationRenderer
+            data={reconciliation.data?.payload}
+            sessionId={sessionId}
+            isLoading={reconciliation.isLoading}
+            isError={reconciliation.isError}
+          />
+
+          {/* Footer — Approve + Export controls */}
+          <View2FooterControlManager
+            applicationState={applicationState}
+            sessionId={sessionId}
+          />
+        </div>
       </div>
-
-      {/* Zone 3 — Reconciliation verdicts */}
-      <Zone3ReconciliationRenderer
-        data={reconciliation.data?.payload}
-        sessionId={sessionId}
-        isLoading={reconciliation.isLoading}
-        isError={reconciliation.isError}
-      />
-
-      {/* Footer — Approve + Export controls */}
-      <View2FooterControlManager
-        applicationState={applicationState}
-        sessionId={sessionId}
-      />
     </div>
   );
 }

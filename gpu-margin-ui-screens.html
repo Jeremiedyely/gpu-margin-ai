@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU Gross Margin Visibility</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+  :root {
+    --bg:#f0f2f5;--card:#fff;--sidebar:#0f172a;--header:#1e293b;
+    --blue:#3b82f6;--blue-h:#2563eb;--blue-d:#1e40af;--blue-l:#dbeafe;
+    --green:#10b981;--green-h:#059669;--green-l:#d1fae5;--green-d:#065f46;
+    --red:#ef4444;--red-l:#fee2e2;--red-d:#991b1b;
+    --amber:#f59e0b;--amber-l:#fef3c7;--amber-d:#92400e;
+    --orange:#f97316;--orange-l:#ffedd5;
+    --indigo:#6366f1;--indigo-h:#4f46e5;
+    --t1:#0f172a;--t2:#475569;--tm:#94a3b8;--tw:#fff;
+    --brd:#e2e8f0;--brd-l:#f1f5f9;
+    --sh:0 4px 6px -1px rgba(0,0,0,0.07),0 2px 4px -2px rgba(0,0,0,0.05);
+    --r:10px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--t1);line-height:1.5;-webkit-font-smoothing:antialiased;}
+
+  /* Header */
+  .hdr{background:var(--header);padding:20px 40px;display:flex;align-items:center;justify-content:space-between;}
+  .hdr h1{font-size:20px;font-weight:700;color:var(--tw);letter-spacing:-.5px;}
+  .hdr .sid{font-size:11px;color:var(--tm);background:rgba(255,255,255,.08);padding:4px 12px;border-radius:20px;font-family:'SF Mono',monospace;}
+
+  /* Body */
+  .body{max-width:1280px;margin:0 auto;padding:28px 40px 64px;}
+
+  /* Steps */
+  .steps{display:flex;align-items:center;justify-content:center;gap:0;margin:24px 0 28px;}
+  .stp{display:flex;flex-direction:column;align-items:center;gap:5px;}
+  .stp-c{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;border:2px solid var(--brd);color:var(--tm);background:#fff;transition:all .3s;}
+  .stp.done .stp-c{background:var(--green);border-color:var(--green);color:#fff;}
+  .stp.active .stp-c{background:var(--blue);border-color:var(--blue);color:#fff;}
+  .stp-l{font-size:11px;font-weight:500;color:var(--tm);transition:all .3s;}
+  .stp.done .stp-l{color:var(--green-d);}
+  .stp.active .stp-l{color:var(--blue);font-weight:600;}
+  .stp-ln{width:56px;height:2px;background:var(--brd);margin:0 8px 18px;transition:background .3s;}
+  .stp-ln.done{background:var(--green);}
+
+  /* Cards */
+  .card{background:var(--card);border-radius:14px;box-shadow:var(--sh);border:1px solid var(--brd-l);overflow:hidden;}
+  .card-h{padding:18px 22px 0;}
+  .card-h h3{font-size:14px;font-weight:600;color:var(--t1);letter-spacing:-.2px;}
+  .card-b{padding:18px 22px 22px;}
+
+  /* KPI */
+  .kpi-g{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px;}
+  .kpi{background:var(--card);border-radius:14px;padding:20px 22px;box-shadow:var(--sh);border:1px solid var(--brd-l);position:relative;overflow:hidden;opacity:0;transform:translateY(12px);transition:all .4s ease;}
+  .kpi.show{opacity:1;transform:translateY(0);}
+  .kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;}
+  .kpi:nth-child(1)::before{background:var(--blue);}
+  .kpi:nth-child(2)::before{background:var(--red);}
+  .kpi:nth-child(3)::before{background:var(--amber);}
+  .kpi:nth-child(4)::before{background:var(--green);}
+  .kpi-lb{font-size:11px;font-weight:600;color:var(--tm);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;}
+  .kpi-v{font-size:26px;font-weight:700;color:var(--t1);letter-spacing:-1px;}
+  .kpi-s{font-size:11px;color:var(--tm);margin-top:3px;}
+
+  /* Tables */
+  table{width:100%;border-collapse:collapse;}
+  thead th{font-size:11px;font-weight:600;color:var(--tm);text-transform:uppercase;letter-spacing:.5px;padding:0 14px 10px;border-bottom:2px solid var(--brd);text-align:left;}
+  tbody td{font-size:13px;padding:12px 14px;border-bottom:1px solid var(--brd-l);color:var(--t1);}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr{transition:background .15s;}
+  tbody tr:hover{background:#f8fafc;}
+
+  /* Badges */
+  .bg{display:inline-flex;align-items:center;padding:3px 9px;border-radius:20px;font-size:10px;font-weight:600;letter-spacing:.3px;}
+  .bg-pass{background:var(--green-l);color:var(--green-d);}
+  .bg-fail{background:var(--red-l);color:var(--red-d);}
+  .bg-risk{background:var(--red-l);color:var(--red-d);}
+  .bg-hold{background:var(--amber-l);color:var(--amber-d);}
+  .bg-flag{background:var(--red-l);color:var(--red-d);}
+  .bg-ib{background:#fce7f3;color:#9d174d;}
+  .bg-idle{background:var(--orange-l);color:#9a3412;}
+
+  /* GM Bar */
+  .gm-t{width:90px;height:7px;background:#f1f5f9;border-radius:4px;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:6px;}
+  .gm-f{height:100%;border-radius:4px;transition:width .8s ease;}
+  .gm-gr{background:linear-gradient(90deg,#34d399,#10b981);}
+  .gm-yl{background:linear-gradient(90deg,#fbbf24,#f59e0b);}
+  .gm-or{background:linear-gradient(90deg,#fb923c,#f97316);}
+  .gm-rd{background:linear-gradient(90deg,#f87171,#ef4444);}
+  .gm-p{font-size:12px;font-weight:600;color:var(--t2);vertical-align:middle;}
+
+  /* Buttons */
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:none;border-radius:var(--r);font-family:inherit;font-weight:600;cursor:pointer;transition:all .15s;letter-spacing:-.1px;}
+  .btn-l{padding:11px 26px;font-size:14px;}
+  .btn-m{padding:8px 18px;font-size:13px;}
+  .btn-s{padding:6px 12px;font-size:12px;}
+  .btn-blue{background:var(--blue);color:#fff;}
+  .btn-blue:hover{background:var(--blue-h);transform:translateY(-1px);box-shadow:var(--sh);}
+  .btn-green{background:var(--green);color:#fff;}
+  .btn-green:hover{background:var(--green-h);transform:translateY(-1px);box-shadow:var(--sh);}
+  .btn-indigo{background:var(--indigo);color:#fff;}
+  .btn-indigo:hover{background:var(--indigo-h);transform:translateY(-1px);box-shadow:var(--sh);}
+  .btn-off{background:#e2e8f0;color:#94a3b8;cursor:not-allowed;pointer-events:none;}
+  .btn:active{transform:translateY(0);}
+
+  /* Upload Zone */
+  .uz{border:2px dashed #cbd5e1;border-radius:18px;padding:44px;text-align:center;background:#fafbfc;transition:all .2s;cursor:pointer;}
+  .uz:hover,.uz.over{border-color:var(--blue);background:var(--blue-l);}
+  .uz-ic{width:60px;height:60px;margin:0 auto 14px;background:var(--blue-l);border-radius:50%;display:flex;align-items:center;justify-content:center;}
+  .uz-t{font-size:17px;font-weight:600;color:var(--t1);margin-bottom:3px;}
+  .uz-s{font-size:13px;color:var(--tm);margin-bottom:16px;}
+
+  /* File Chips */
+  .chips{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin-top:18px;}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:5px 12px;border-radius:20px;font-size:11px;font-weight:500;border:1px solid var(--brd);background:#fff;color:var(--t2);transition:all .3s;}
+  .chip.ok{border-color:var(--green);background:var(--green-l);color:var(--green-d);}
+  .chip-d{width:6px;height:6px;border-radius:50%;background:#cbd5e1;transition:background .3s;}
+  .chip.ok .chip-d{background:var(--green);}
+
+  /* Alert */
+  .alrt{border-radius:var(--r);padding:12px 18px;font-size:13px;display:flex;align-items:flex-start;gap:10px;}
+  .alrt-w{background:var(--amber-l);color:var(--amber-d);border:1px solid #fde68a;}
+  .alrt-i{background:var(--blue-l);color:var(--blue-d);border:1px solid #93c5fd;}
+  .alrt-s{background:var(--green-l);color:var(--green-d);border:1px solid #6ee7b7;}
+
+  /* Grid */
+  .zgrid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:20px;}
+
+  /* Footer */
+  .fbar{display:flex;align-items:center;gap:10px;padding:22px 0;border-top:2px solid var(--brd);margin-top:8px;}
+  .fdiv{width:1px;height:30px;background:var(--brd);margin:0 4px;}
+
+  /* Spinner */
+  .spin-w{text-align:center;padding:70px 0;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .spin{width:44px;height:44px;border:3px solid var(--brd);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 18px;}
+  @keyframes pulse{0%,100%{opacity:.3;}50%{opacity:1;}}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--blue);margin:0 3px;animation:pulse 1.4s ease-in-out infinite;}
+  .dot:nth-child(2){animation-delay:.2s;}
+  .dot:nth-child(3){animation-delay:.4s;}
+
+  /* Confirm Dialog */
+  .overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:200;align-items:center;justify-content:center;backdrop-filter:blur(2px);}
+  .overlay.show{display:flex;}
+  .dialog{background:#fff;border-radius:16px;padding:32px;max-width:420px;width:90%;box-shadow:0 20px 40px rgba(0,0,0,.15);text-align:center;}
+  .dialog h2{font-size:18px;font-weight:700;margin-bottom:8px;}
+  .dialog p{font-size:13px;color:var(--t2);margin-bottom:24px;}
+  .dialog .btns{display:flex;gap:10px;justify-content:center;}
+
+  /* Transitions */
+  .screen{display:none;opacity:0;transition:opacity .3s;}
+  .screen.active{display:block;opacity:1;}
+  .fade-in{animation:fadeIn .4s ease forwards;}
+  @keyframes fadeIn{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:translateY(0);}}
+
+  /* Toast */
+  .toast{position:fixed;bottom:24px;right:24px;background:var(--sidebar);color:#fff;padding:12px 20px;border-radius:10px;font-size:13px;font-weight:500;z-index:300;transform:translateY(80px);opacity:0;transition:all .3s ease;display:flex;align-items:center;gap:8px;}
+  .toast.show{transform:translateY(0);opacity:1;}
+
+  @media(max-width:900px){.kpi-g{grid-template-columns:repeat(2,1fr);}.zgrid{grid-template-columns:1fr;}}
+</style>
+</head>
+<body>
+
+<!-- ═══ SCREEN 1: UPLOAD ═══ -->
+<div class="screen active" id="s-upload">
+  <div class="hdr">
+    <h1>GPU Gross Margin Visibility</h1>
+  </div>
+  <div class="body">
+    <div class="steps" id="steps-upload">
+      <div class="stp active"><div class="stp-c">1</div><div class="stp-l">Upload</div></div>
+      <div class="stp-ln"></div>
+      <div class="stp"><div class="stp-c">2</div><div class="stp-l">Analyze</div></div>
+      <div class="stp-ln"></div>
+      <div class="stp"><div class="stp-c">3</div><div class="stp-l">Approve</div></div>
+      <div class="stp-ln"></div>
+      <div class="stp"><div class="stp-c">4</div><div class="stp-l">Export</div></div>
+    </div>
+    <div class="card" style="max-width:700px;margin:0 auto;">
+      <div class="card-b" style="padding:36px;">
+        <div class="uz" id="dropzone" onclick="document.getElementById('file-input').click()">
+          <div class="uz-ic">
+            <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="#3b82f6"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
+          </div>
+          <div class="uz-t">Upload Source Files</div>
+          <div class="uz-s">Drop 5 CSV files or click to browse</div>
+          <input type="file" id="file-input" multiple accept=".csv" style="display:none" onchange="handleFiles(this.files)">
+        </div>
+        <div class="chips" id="chip-area">
+          <span class="chip" id="chip-telemetry"><span class="chip-d"></span>telemetry.csv</span>
+          <span class="chip" id="chip-cost_management"><span class="chip-d"></span>cost_management.csv</span>
+          <span class="chip" id="chip-iam"><span class="chip-d"></span>iam.csv</span>
+          <span class="chip" id="chip-billing"><span class="chip-d"></span>billing.csv</span>
+          <span class="chip" id="chip-erp"><span class="chip-d"></span>erp.csv</span>
+        </div>
+        <div style="text-align:center;margin-top:22px;">
+          <button class="btn btn-blue btn-l btn-off" id="upload-btn" onclick="startUpload()">Upload All Files</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SCREEN 2: UPLOADED — ANALYZE ═══ -->
+<div class="screen" id="s-uploaded">
+  <div class="hdr">
+    <h1>GPU Gross Margin Visibility</h1>
+    <span class="sid" id="sid-uploaded"></span>
+  </div>
+  <div class="body">
+    <div class="steps">
+      <div class="stp done"><div class="stp-c">✓</div><div class="stp-l">Upload</div></div>
+      <div class="stp-ln done"></div>
+      <div class="stp active"><div class="stp-c">2</div><div class="stp-l">Analyze</div></div>
+      <div class="stp-ln"></div>
+      <div class="stp"><div class="stp-c">3</div><div class="stp-l">Approve</div></div>
+      <div class="stp-ln"></div>
+      <div class="stp"><div class="stp-c">4</div><div class="stp-l">Export</div></div>
+    </div>
+    <div class="card fade-in" style="max-width:600px;margin:0 auto;">
+      <div class="card-b">
+        <div class="alrt alrt-s" style="margin-bottom:20px;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="flex-shrink:0;margin-top:1px;"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
+          <span><strong>5 files uploaded successfully.</strong> Ready to run analysis.</span>
+        </div>
+        <div style="text-align:center;">
+          <button class="btn btn-blue btn-l" onclick="startAnalysis()" id="analyze-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 0 0 6 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0 1 18 16.5h-2.25m-7.5 0h7.5m-7.5 0-1 3m8.5-3 1 3m0 0 .5 1.5m-.5-1.5h-9.5m0 0-.5 1.5"/></svg>
+            Run Analysis
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SCREEN 3: ANALYZING ═══ -->
+<div class="screen" id="s-analyzing">
+  <div class="hdr">
+    <h1>GPU Gross Margin Visibility</h1>
+    <span class="sid" id="sid-analyzing"></span>
+  </div>
+  <div class="body">
+    <div class="steps">
+      <div class="stp done"><div class="stp-c">✓</div><div class="stp-l">Upload</div></div>
+      <div class="stp-ln done"></div>
+      <div class="stp active"><div class="stp-c">2</div><div class="stp-l">Analyze</div></div>
+      <div class="stp-ln"></div>
+      <div class="stp"><div class="stp-c">3</div><div class="stp-l">Approve</div></div>
+      <div class="stp-ln"></div>
+      <div class="stp"><div class="stp-c">4</div><div class="stp-l">Export</div></div>
+    </div>
+    <div class="card fade-in" style="max-width:560px;margin:0 auto;">
+      <div class="card-b">
+        <div class="spin-w">
+          <div class="spin"></div>
+          <div style="font-size:17px;font-weight:600;color:var(--t1);margin-bottom:5px;">Analysis in Progress</div>
+          <div style="font-size:13px;color:var(--tm);margin-bottom:10px;">Running Allocation Engine &amp; Reconciliation Engine</div>
+          <div id="analysis-step" style="font-size:12px;color:var(--blue);font-weight:500;margin-bottom:18px;">Aggregating telemetry...</div>
+          <div><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+          <!-- Progress bar -->
+          <div style="margin-top:24px;background:#e2e8f0;border-radius:6px;height:6px;overflow:hidden;max-width:320px;margin-left:auto;margin-right:auto;">
+            <div id="analysis-bar" style="width:0%;height:100%;background:linear-gradient(90deg,var(--blue),var(--indigo));border-radius:6px;transition:width .6s ease;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SCREEN 4: ANALYZED ═══ -->
+<div class="screen" id="s-analyzed">
+  <div class="hdr">
+    <h1>GPU Gross Margin Visibility</h1>
+    <span class="sid" id="sid-analyzed"></span>
+  </div>
+  <div class="body">
+    <div class="steps">
+      <div class="stp done"><div class="stp-c">✓</div><div class="stp-l">Upload</div></div>
+      <div class="stp-ln done"></div>
+      <div class="stp done"><div class="stp-c">✓</div><div class="stp-l">Analyze</div></div>
+      <div class="stp-ln done"></div>
+      <div class="stp active"><div class="stp-c">3</div><div class="stp-l">Approve</div></div>
+      <div class="stp-ln"></div>
+      <div class="stp"><div class="stp-c">4</div><div class="stp-l">Export</div></div>
+    </div>
+
+    <div class="kpi-g" id="kpi-grid">
+      <div class="kpi"><div class="kpi-lb">GPU Revenue</div><div class="kpi-v" data-count="15420">$0</div><div class="kpi-s">6 active customers</div></div>
+      <div class="kpi"><div class="kpi-lb">GPU COGS</div><div class="kpi-v" data-count="7399">$0</div><div class="kpi-s">3 regions · 3 pools</div></div>
+      <div class="kpi"><div class="kpi-lb">Idle GPU Cost</div><div class="kpi-v" data-count="4161">$0</div><div class="kpi-s">1,485 idle hours</div></div>
+      <div class="kpi"><div class="kpi-lb">Cost Allocation Rate</div><div class="kpi-v" data-count="64.01" data-suffix="%">0%</div><div class="kpi-s">Target: ≥ 75%</div></div>
+    </div>
+
+    <div class="zgrid">
+      <!-- Regions -->
+      <div class="card fade-in">
+        <div class="card-h"><h3>Gross Margin by Region</h3></div>
+        <div class="card-b">
+          <table>
+            <thead><tr><th>Region</th><th>GM%</th><th>Idle%</th><th>Revenue</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr>
+                <td style="font-weight:600;">us-east-1</td>
+                <td><span class="gm-t"><span class="gm-f gm-gr" style="width:0" data-w="59%"></span></span><span class="gm-p">58.74%</span></td>
+                <td style="color:var(--red);">46.88%</td><td>$5,150.00</td>
+                <td><span class="bg bg-risk">AT RISK</span></td>
+              </tr>
+              <tr>
+                <td style="font-weight:600;">us-west-2</td>
+                <td><span class="gm-t"><span class="gm-f gm-gr" style="width:0" data-w="49%"></span></span><span class="gm-p">49.30%</span></td>
+                <td style="color:var(--amber);">26.43%</td><td>$6,095.00</td>
+                <td><span class="bg bg-hold">HOLDING</span></td>
+              </tr>
+              <tr>
+                <td style="font-weight:600;">eu-west-1</td>
+                <td><span class="gm-t"><span class="gm-f gm-gr" style="width:0" data-w="48%"></span></span><span class="gm-p">47.69%</span></td>
+                <td style="color:var(--amber);">35.00%</td><td>$4,175.00</td>
+                <td><span class="bg bg-risk">AT RISK</span></td>
+              </tr>
+            </tbody>
+          </table>
+          <div style="display:flex;gap:7px;margin-top:14px;">
+            <span class="bg bg-ib">Identity Broken</span>
+            <span class="bg bg-idle">Capacity Idle</span>
+          </div>
+        </div>
+      </div>
+      <!-- Customers -->
+      <div class="card fade-in">
+        <div class="card-h"><h3>Gross Margin by Customer</h3></div>
+        <div class="card-b">
+          <table>
+            <thead><tr><th>Customer</th><th>GM%</th><th>Revenue</th><th>Risk</th></tr></thead>
+            <tbody>
+              <tr><td style="font-weight:600;">nexus-data</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:0" data-w="77%"></span></span><span class="gm-p">76.67%</span></td><td>$2,040.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">acme-corp</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:0" data-w="67%"></span></span><span class="gm-p">66.67%</span></td><td>$3,750.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">soylent-ai</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:0" data-w="63%"></span></span><span class="gm-p">62.50%</span></td><td>$2,000.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">initech-llc</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:0" data-w="43%"></span></span><span class="gm-p">42.86%</span></td><td>$4,095.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">globex-inc</td><td><span class="gm-t"><span class="gm-f gm-yl" style="width:0" data-w="38%"></span></span><span class="gm-p">37.50%</span></td><td>$1,400.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">umbrella-ml</td><td><span class="gm-t"><span class="gm-f gm-or" style="width:0" data-w="20%"></span></span><span class="gm-p">20.00%</span></td><td>$2,135.00</td><td><span class="bg bg-flag">FLAG</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reconciliation -->
+    <div class="card fade-in" style="margin-bottom:20px;">
+      <div class="card-h"><h3>Reconciliation</h3></div>
+      <div class="card-b">
+        <table>
+          <thead><tr><th>Check</th><th style="text-align:right;">Status</th></tr></thead>
+          <tbody>
+            <tr><td>Capacity vs Usage</td><td style="text-align:right;"><span class="bg bg-pass">PASS</span></td></tr>
+            <tr><td>Usage vs Tenant Mapping</td><td style="text-align:right;"><span class="bg bg-fail">FAIL</span></td></tr>
+            <tr><td>Computed vs Billed vs Posted</td><td style="text-align:right;"><span class="bg bg-pass">PASS</span></td></tr>
+          </tbody>
+        </table>
+        <div class="alrt alrt-w" style="margin-top:14px;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="flex-shrink:0;margin-top:1px;"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/></svg>
+          <span>One or more reconciliation checks failed. Contact your data team to investigate.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="fbar">
+      <button class="btn btn-blue btn-l" onclick="showApproveDialog()">Approve</button>
+      <div class="fdiv"></div>
+      <button class="btn btn-off btn-m">Export CSV</button>
+      <button class="btn btn-off btn-m">Export Excel</button>
+      <button class="btn btn-off btn-m">Export Power BI</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SCREEN 5: APPROVED ═══ -->
+<div class="screen" id="s-approved">
+  <div class="hdr">
+    <h1>GPU Gross Margin Visibility</h1>
+    <span class="sid" id="sid-approved"></span>
+  </div>
+  <div class="body">
+    <div class="steps">
+      <div class="stp done"><div class="stp-c">✓</div><div class="stp-l">Upload</div></div>
+      <div class="stp-ln done"></div>
+      <div class="stp done"><div class="stp-c">✓</div><div class="stp-l">Analyze</div></div>
+      <div class="stp-ln done"></div>
+      <div class="stp done"><div class="stp-c">✓</div><div class="stp-l">Approve</div></div>
+      <div class="stp-ln done"></div>
+      <div class="stp active"><div class="stp-c">4</div><div class="stp-l">Export</div></div>
+    </div>
+
+    <div class="alrt alrt-s fade-in" style="margin-bottom:20px;">
+      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="flex-shrink:0;margin-top:1px;"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
+      <span><strong>Session Approved.</strong> Results written to final.allocation_result. Export your data or start a new session.</span>
+    </div>
+
+    <div class="kpi-g" id="kpi-grid-approved">
+      <div class="kpi show"><div class="kpi-lb">GPU Revenue</div><div class="kpi-v">$15,420.00</div></div>
+      <div class="kpi show"><div class="kpi-lb">GPU COGS</div><div class="kpi-v">$7,399.00</div></div>
+      <div class="kpi show"><div class="kpi-lb">Idle GPU Cost</div><div class="kpi-v">$4,161.00</div></div>
+      <div class="kpi show"><div class="kpi-lb">Cost Allocation Rate</div><div class="kpi-v">64.01%</div></div>
+    </div>
+
+    <div class="zgrid">
+      <div class="card">
+        <div class="card-h"><h3>Gross Margin by Region</h3></div>
+        <div class="card-b">
+          <table>
+            <thead><tr><th>Region</th><th>GM%</th><th>Idle%</th><th>Revenue</th><th>Status</th></tr></thead>
+            <tbody>
+              <tr><td style="font-weight:600;">us-east-1</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:59%"></span></span><span class="gm-p">58.74%</span></td><td style="color:var(--red);">46.88%</td><td>$5,150.00</td><td><span class="bg bg-risk">AT RISK</span></td></tr>
+              <tr><td style="font-weight:600;">us-west-2</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:49%"></span></span><span class="gm-p">49.30%</span></td><td style="color:var(--amber);">26.43%</td><td>$6,095.00</td><td><span class="bg bg-hold">HOLDING</span></td></tr>
+              <tr><td style="font-weight:600;">eu-west-1</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:48%"></span></span><span class="gm-p">47.69%</span></td><td style="color:var(--amber);">35.00%</td><td>$4,175.00</td><td><span class="bg bg-risk">AT RISK</span></td></tr>
+            </tbody>
+          </table>
+          <div style="display:flex;gap:7px;margin-top:14px;"><span class="bg bg-ib">Identity Broken</span><span class="bg bg-idle">Capacity Idle</span></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-h"><h3>Gross Margin by Customer</h3></div>
+        <div class="card-b">
+          <table>
+            <thead><tr><th>Customer</th><th>GM%</th><th>Revenue</th><th>Risk</th></tr></thead>
+            <tbody>
+              <tr><td style="font-weight:600;">nexus-data</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:77%"></span></span><span class="gm-p">76.67%</span></td><td>$2,040.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">acme-corp</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:67%"></span></span><span class="gm-p">66.67%</span></td><td>$3,750.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">soylent-ai</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:63%"></span></span><span class="gm-p">62.50%</span></td><td>$2,000.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">initech-llc</td><td><span class="gm-t"><span class="gm-f gm-gr" style="width:43%"></span></span><span class="gm-p">42.86%</span></td><td>$4,095.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">globex-inc</td><td><span class="gm-t"><span class="gm-f gm-yl" style="width:38%"></span></span><span class="gm-p">37.50%</span></td><td>$1,400.00</td><td></td></tr>
+              <tr><td style="font-weight:600;">umbrella-ml</td><td><span class="gm-t"><span class="gm-f gm-or" style="width:20%"></span></span><span class="gm-p">20.00%</span></td><td>$2,135.00</td><td><span class="bg bg-flag">FLAG</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:20px;">
+      <div class="card-h"><h3>Reconciliation</h3></div>
+      <div class="card-b">
+        <table>
+          <thead><tr><th>Check</th><th style="text-align:right;">Status</th></tr></thead>
+          <tbody>
+            <tr><td>Capacity vs Usage</td><td style="text-align:right;"><span class="bg bg-pass">PASS</span></td></tr>
+            <tr><td>Usage vs Tenant Mapping</td><td style="text-align:right;"><span class="bg bg-fail">FAIL</span></td></tr>
+            <tr><td>Computed vs Billed vs Posted</td><td style="text-align:right;"><span class="bg bg-pass">PASS</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="fbar">
+      <button class="btn btn-off btn-l" style="opacity:.5;">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m4.5 12.75 6 6 9-13.5"/></svg>
+        Approved
+      </button>
+      <div class="fdiv"></div>
+      <button class="btn btn-green btn-m" onclick="doExport('CSV')">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+        Export CSV
+      </button>
+      <button class="btn btn-green btn-m" onclick="doExport('Excel')">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+        Export Excel
+      </button>
+      <button class="btn btn-green btn-m" onclick="doExport('Power BI')">
+        <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+        Export Power BI
+      </button>
+      <div class="fdiv"></div>
+      <button class="btn btn-indigo btn-m" onclick="newSession()">New Session</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ APPROVE DIALOG ═══ -->
+<div class="overlay" id="approve-dialog">
+  <div class="dialog">
+    <h2>Approve Results?</h2>
+    <p>This will write the allocation grain to final.allocation_result and lock this session. This action cannot be undone.</p>
+    <div class="btns">
+      <button class="btn btn-m" style="background:#f1f5f9;color:var(--t2);" onclick="closeDialog()">Cancel</button>
+      <button class="btn btn-blue btn-m" onclick="confirmApprove()">Confirm Approval</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ TOAST ═══ -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ── State ──
+let sessionId = '';
+let filesLoaded = new Set();
+const REQUIRED = ['telemetry','cost_management','iam','billing','erp'];
+
+function genId(){ return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return(c==='x'?r:(r&0x3|0x8)).toString(16);}); }
+
+// ── Screen Navigation ──
+function go(id){
+  document.querySelectorAll('.screen').forEach(s=>{s.classList.remove('active');});
+  document.getElementById('s-'+id).classList.add('active');
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+// ── Toast ──
+function toast(msg, icon='✓'){
+  const t=document.getElementById('toast');
+  t.innerHTML=icon+' '+msg;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),3000);
+}
+
+// ── File Handling ──
+const dz=document.getElementById('dropzone');
+dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('over');});
+dz.addEventListener('dragleave',()=>dz.classList.remove('over'));
+dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('over');handleFiles(e.dataTransfer.files);});
+
+function handleFiles(fileList){
+  for(const f of fileList){
+    const name=f.name.replace('.csv','');
+    if(REQUIRED.includes(name)){
+      filesLoaded.add(name);
+      const chip=document.getElementById('chip-'+name);
+      if(chip) chip.classList.add('ok');
+    }
+  }
+  // Enable upload button when all 5 loaded
+  const btn=document.getElementById('upload-btn');
+  if(filesLoaded.size>=5){
+    btn.classList.remove('btn-off');
+  }
+  // Also allow if any files selected (demo flexibility)
+  if(fileList.length>0 && filesLoaded.size<5){
+    // Mark all as loaded for demo
+    REQUIRED.forEach(n=>{
+      filesLoaded.add(n);
+      const chip=document.getElementById('chip-'+n);
+      if(chip) chip.classList.add('ok');
+    });
+    btn.classList.remove('btn-off');
+  }
+}
+
+// ── Upload ──
+function startUpload(){
+  if(filesLoaded.size<5) return;
+  sessionId=genId();
+  const btn=document.getElementById('upload-btn');
+  btn.textContent='Uploading...';
+  btn.classList.add('btn-off');
+
+  setTimeout(()=>{
+    document.getElementById('sid-uploaded').textContent=sessionId;
+    go('uploaded');
+    toast('Files uploaded successfully');
+  },800);
+}
+
+// ── Analysis ──
+function startAnalysis(){
+  const btn=document.getElementById('analyze-btn');
+  btn.textContent='Dispatching...';
+  btn.classList.add('btn-off');
+  btn.style.pointerEvents='none';
+
+  document.getElementById('sid-analyzing').textContent=sessionId;
+
+  setTimeout(()=>{
+    go('analyzing');
+    runAnalysisAnimation();
+  },600);
+}
+
+function runAnalysisAnimation(){
+  const steps=[
+    {text:'Aggregating telemetry...',pct:10},
+    {text:'Deriving billing periods...',pct:20},
+    {text:'Reading cost rates...',pct:30},
+    {text:'Resolving IAM identities...',pct:45},
+    {text:'Building Type A records...',pct:55},
+    {text:'Enforcing closure rule...',pct:65},
+    {text:'Calculating cost & revenue...',pct:75},
+    {text:'Writing allocation grain...',pct:85},
+    {text:'Running reconciliation checks...',pct:92},
+    {text:'Building UI cache...',pct:100},
+  ];
+  const stepEl=document.getElementById('analysis-step');
+  const barEl=document.getElementById('analysis-bar');
+  let i=0;
+  const iv=setInterval(()=>{
+    if(i>=steps.length){
+      clearInterval(iv);
+      setTimeout(()=>{
+        document.getElementById('sid-analyzed').textContent=sessionId;
+        go('analyzed');
+        animateAnalyzedScreen();
+        toast('Analysis complete');
+      },500);
+      return;
+    }
+    stepEl.textContent=steps[i].text;
+    barEl.style.width=steps[i].pct+'%';
+    i++;
+  },500);
+}
+
+function animateAnalyzedScreen(){
+  // Animate KPI cards
+  const kpis=document.querySelectorAll('#kpi-grid .kpi');
+  kpis.forEach((k,i)=>setTimeout(()=>{k.classList.add('show');countUp(k.querySelector('.kpi-v'));},i*120));
+
+  // Animate GM bars
+  setTimeout(()=>{
+    document.querySelectorAll('#s-analyzed .gm-f[data-w]').forEach(b=>{b.style.width=b.dataset.w;});
+  },500);
+}
+
+function countUp(el){
+  const target=parseFloat(el.dataset.count);
+  const suffix=el.dataset.suffix||'';
+  const isMoney=!suffix;
+  const duration=600;
+  const start=performance.now();
+
+  function frame(now){
+    const t=Math.min((now-start)/duration,1);
+    const ease=1-Math.pow(1-t,3);
+    const val=target*ease;
+    if(isMoney){
+      el.textContent='$'+val.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    }else{
+      el.textContent=val.toFixed(2)+suffix;
+    }
+    if(t<1) requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+}
+
+// ── Approve ──
+function showApproveDialog(){
+  document.getElementById('approve-dialog').classList.add('show');
+}
+function closeDialog(){
+  document.getElementById('approve-dialog').classList.remove('show');
+}
+function confirmApprove(){
+  closeDialog();
+  document.getElementById('sid-approved').textContent=sessionId;
+  setTimeout(()=>{
+    go('approved');
+    toast('Session approved — export ready');
+  },300);
+}
+
+// ── Export ──
+function doExport(format){
+  toast('Downloading '+format+' export...','⬇');
+}
+
+// ── New Session ──
+function newSession(){
+  // Reset state
+  filesLoaded.clear();
+  sessionId='';
+  REQUIRED.forEach(n=>{
+    const chip=document.getElementById('chip-'+n);
+    if(chip) chip.classList.remove('ok');
+  });
+  const btn=document.getElementById('upload-btn');
+  btn.textContent='Upload All Files';
+  btn.classList.add('btn-off');
+
+  const abtn=document.getElementById('analyze-btn');
+  abtn.innerHTML='<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 0 0 6 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0 1 18 16.5h-2.25m-7.5 0h7.5m-7.5 0-1 3m8.5-3 1 3m0 0 .5 1.5m-.5-1.5h-9.5m0 0-.5 1.5"/></svg> Run Analysis';
+  abtn.classList.remove('btn-off');
+  abtn.style.pointerEvents='';
+
+  // Reset KPI animations
+  document.querySelectorAll('#kpi-grid .kpi').forEach(k=>k.classList.remove('show'));
+  document.querySelectorAll('#s-analyzed .gm-f[data-w]').forEach(b=>b.style.width='0');
+  document.getElementById('analysis-bar').style.width='0';
+
+  go('upload');
+  toast('Ready for new session','🔄');
+}
+</script>
+</body>
+</html>
