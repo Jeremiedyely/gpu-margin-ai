@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU Gross Margin Visibility — Workflow</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #0d1117;
+    color: #e6edf3;
+    padding: 32px 24px 64px;
+    min-height: 100vh;
+  }
+
+  h1 {
+    text-align: center;
+    font-size: 20px;
+    font-weight: 600;
+    color: #f0f6fc;
+    letter-spacing: 0.4px;
+    margin-bottom: 4px;
+  }
+
+  .subtitle {
+    text-align: center;
+    font-size: 12px;
+    color: #7d8590;
+    margin-bottom: 40px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+
+  /* ── PHASE LANE ─────────────────────────────────── */
+  .pipeline {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    max-width: 1060px;
+    margin: 0 auto;
+  }
+
+  .phase {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    gap: 0;
+    position: relative;
+  }
+
+  /* phase label */
+  .phase-label {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    padding: 20px 20px 20px 0;
+    border-right: 2px solid #21262d;
+    min-height: 120px;
+    position: relative;
+  }
+
+  .phase-label .num {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    opacity: 0.5;
+    margin-bottom: 4px;
+  }
+
+  .phase-label .name {
+    font-size: 13px;
+    font-weight: 700;
+    text-align: right;
+    line-height: 1.3;
+  }
+
+  .phase-label .state-badge {
+    margin-top: 8px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 3px 8px;
+    border-radius: 20px;
+    text-align: center;
+  }
+
+  /* connector dot on the timeline */
+  .phase-label::after {
+    content: '';
+    position: absolute;
+    right: -7px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid #0d1117;
+    z-index: 2;
+  }
+
+  /* phase content area */
+  .phase-body {
+    padding: 20px 0 20px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  /* ── PHASE COLORS ───────────────────────────────── */
+  .phase-1 .phase-label { color: #58a6ff; }
+  .phase-1 .phase-label::after { background: #58a6ff; }
+  .phase-1 .phase-label .state-badge { background: #0d2137; color: #58a6ff; border: 1px solid #1d4b78; }
+
+  .phase-2 .phase-label { color: #bc8cff; }
+  .phase-2 .phase-label::after { background: #bc8cff; }
+  .phase-2 .phase-label .state-badge { background: #1a1030; color: #bc8cff; border: 1px solid #4d2f8f; }
+
+  .phase-3 .phase-label { color: #e3b341; }
+  .phase-3 .phase-label::after { background: #e3b341; }
+  .phase-3 .phase-label .state-badge { background: #1f1800; color: #e3b341; border: 1px solid #5a4000; }
+
+  .phase-4 .phase-label { color: #3fb950; }
+  .phase-4 .phase-label::after { background: #3fb950; }
+  .phase-4 .phase-label .state-badge { background: #0a1f0d; color: #3fb950; border: 1px solid #1a5c25; }
+
+  .phase-5 .phase-label { color: #f78166; }
+  .phase-5 .phase-label::after { background: #f78166; }
+  .phase-5 .phase-label .state-badge { background: #1f0d08; color: #f78166; border: 1px solid #7a2e1e; }
+
+  /* ── CARDS ──────────────────────────────────────── */
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .card {
+    background: #161b22;
+    border: 1px solid #21262d;
+    border-radius: 8px;
+    padding: 12px 14px;
+    flex: 1;
+    min-width: 180px;
+    max-width: 340px;
+    position: relative;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .card:hover {
+    border-color: #388bfd;
+    box-shadow: 0 0 0 1px #388bfd22;
+  }
+
+  .card-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #f0f6fc;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .card-title .icon {
+    font-size: 14px;
+  }
+
+  .card-tag {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-bottom: 6px;
+  }
+
+  .card-body {
+    font-size: 11px;
+    color: #8b949e;
+    line-height: 1.55;
+  }
+
+  .card-body strong {
+    color: #c9d1d9;
+    font-weight: 600;
+  }
+
+  .card-body .rule {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+  }
+
+  .card-body .rule::before {
+    content: '→';
+    color: #484f58;
+    flex-shrink: 0;
+  }
+
+  /* gate card — highlighted */
+  .gate-card {
+    border-color: #3fb95044;
+    background: #0d1f11;
+  }
+
+  .gate-card .card-title { color: #3fb950; }
+
+  .fail-card {
+    border-color: #f7816633;
+    background: #1a0e0a;
+  }
+
+  .warn-card {
+    border-color: #e3b34133;
+    background: #1a1400;
+  }
+
+  /* ── TAG COLORS ─────────────────────────────────── */
+  .tag-blue   { background: #0d2137; color: #58a6ff; }
+  .tag-purple { background: #1a1030; color: #bc8cff; }
+  .tag-yellow { background: #1f1800; color: #e3b341; }
+  .tag-green  { background: #0a1f0d; color: #3fb950; }
+  .tag-orange { background: #1f1200; color: #f78166; }
+  .tag-gray   { background: #1c2128; color: #7d8590; }
+  .tag-red    { background: #200e0e; color: #f85149; }
+
+  /* ── ARROW CONNECTOR ────────────────────────────── */
+  .arrow-connector {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 0 0 0 160px;
+    height: 36px;
+    position: relative;
+  }
+
+  .arrow-line {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding-left: 28px;
+  }
+
+  .arrow-line .arrow-label {
+    font-size: 10px;
+    color: #484f58;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+  }
+
+  .arrow-line .arrow-svg {
+    color: #21262d;
+  }
+
+  /* ── DATA STORES ────────────────────────────────── */
+  .data-store {
+    background: #0d1117;
+    border: 1px dashed #30363d;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 11px;
+    color: #7d8590;
+    flex: 0 0 auto;
+    min-width: 180px;
+  }
+
+  .data-store .ds-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #c9d1d9;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* ── PARALLEL BADGE ─────────────────────────────── */
+  .parallel-wrapper {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .parallel-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+  }
+
+  .parallel-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #484f58;
+    border-left: 2px solid #21262d;
+    padding-left: 8px;
+    margin-bottom: 2px;
+  }
+
+  /* ── CHECK ROWS ─────────────────────────────────── */
+  .check-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-size: 11px;
+    color: #8b949e;
+  }
+
+  .check-badge {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+  }
+
+  .pass { background: #0a2f15; color: #3fb950; }
+  .fail { background: #2d0e0e; color: #f85149; }
+
+  /* ── SECTION DIVIDER ────────────────────────────── */
+  .section-divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 0 0 160px;
+    margin: 4px 0;
+    padding-left: calc(160px + 28px);
+  }
+
+  .section-divider span {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #484f58;
+    white-space: nowrap;
+  }
+
+  .section-divider::before, .section-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: #21262d;
+  }
+
+  .section-divider::before { max-width: 20px; }
+
+  /* ── KEYS PANEL ─────────────────────────────────── */
+  .keys-panel {
+    max-width: 1060px;
+    margin: 48px auto 0;
+    border: 1px solid #21262d;
+    border-radius: 10px;
+    padding: 20px 24px;
+    background: #161b22;
+  }
+
+  .keys-panel h2 {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #7d8590;
+    margin-bottom: 16px;
+  }
+
+  .keys-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+    gap: 12px;
+  }
+
+  .key-item {
+    border: 1px solid #21262d;
+    border-radius: 6px;
+    padding: 10px 12px;
+    background: #0d1117;
+  }
+
+  .key-item .key-name {
+    font-size: 11px;
+    font-weight: 700;
+    color: #f0f6fc;
+    margin-bottom: 4px;
+    font-family: 'Courier New', monospace;
+  }
+
+  .key-item .key-desc {
+    font-size: 10px;
+    color: #7d8590;
+    line-height: 1.5;
+  }
+
+  /* ── STATE FLOW ─────────────────────────────────── */
+  .state-flow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+
+  .state-pill {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 1px solid;
+  }
+
+  .sp-empty   { background: #1c2128; color: #7d8590; border-color: #30363d; }
+  .sp-upload  { background: #0d2137; color: #58a6ff; border-color: #1d4b78; }
+  .sp-analyzed{ background: #1a1030; color: #bc8cff; border-color: #4d2f8f; }
+  .sp-approved{ background: #0a1f0d; color: #3fb950; border-color: #1a5c25; }
+
+  .state-arrow { color: #30363d; font-size: 14px; font-weight: 700; }
+
+  /* top state indicator strip */
+  .state-strip {
+    max-width: 1060px;
+    margin: 0 auto 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* vertical timeline between phases */
+  .phase:not(:last-child) .phase-label::before {
+    content: '';
+    position: absolute;
+    right: -1px;
+    top: 100%;
+    width: 2px;
+    height: 36px;
+    background: #21262d;
+    z-index: 1;
+  }
+</style>
+</head>
+<body>
+
+<h1>GPU Gross Margin Visibility Application</h1>
+<p class="subtitle">End-to-End Workflow — 6 Modules · 73 Components · 4 States</p>
+
+<!-- State Flow Strip -->
+<div class="state-strip">
+  <span class="state-pill sp-empty">EMPTY</span>
+  <span class="state-arrow">→</span>
+  <span class="state-pill sp-upload">UPLOADED</span>
+  <span class="state-arrow">→</span>
+  <span class="state-pill sp-analyzed">ANALYZED</span>
+  <span class="state-arrow">→</span>
+  <span class="state-pill sp-approved">APPROVED ⬤ terminal</span>
+</div>
+
+<div class="pipeline">
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- PHASE 1 — UPLOAD                               -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <div class="phase phase-1">
+    <div class="phase-label">
+      <div class="num">Phase 01</div>
+      <div class="name">Upload &<br>Ingestion</div>
+      <div class="state-badge">EMPTY → UPLOADED</div>
+    </div>
+    <div class="phase-body">
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-blue">UI — View 1</span>
+          <div class="card-title"><span class="icon">📂</span> 5 Upload Slots</div>
+          <div class="card-body">
+            Telemetry · Cost Mgmt · IAM · Billing · ERP/GL<br>
+            <div class="rule">CFO uploads all five CSV source files</div>
+          </div>
+        </div>
+        <div class="card">
+          <span class="card-tag tag-blue">Ingestion · Layer 1–2</span>
+          <div class="card-title"><span class="icon">✔</span> Validators × 5 → Parsers × 5</div>
+          <div class="card-body">
+            Schema · type · null · natural key checks<br>
+            <div class="rule"><strong>billing_period YYYY-MM</strong> enforced at IAM, Billing, ERP</div>
+            <div class="rule"><strong>tenant_id</strong> format pattern validated (prevents silent identity_broken)</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-blue">Ingestion · Layer 3–4</span>
+          <div class="card-title"><span class="icon">🗄</span> Raw Table Writers × 5 + Orchestrator</div>
+          <div class="card-body">
+            Orchestrator generates <strong>session_id</strong> before any write<br>
+            All 5 writers run in parallel — dedicated connections<br>
+            <div class="rule">Rows staged (not yet active) tagged with session_id</div>
+          </div>
+        </div>
+        <div class="card gate-card">
+          <span class="card-tag tag-green">Ingestion Commit — Gate</span>
+          <div class="card-title"><span class="icon">🔒</span> Atomic Promote or Full Drop</div>
+          <div class="card-body">
+            <strong>STEP 1</strong> — drop all prior active rows (replacement)<br>
+            <strong>STEP 2</strong> — promote new session atomically<br>
+            <div class="rule"><strong>FAIL</strong> → drop entire session · no partial data survives</div>
+            <div class="rule">Only one session active at a time — guaranteed</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-blue">Ingestion · Layer 5–6</span>
+          <div class="card-title"><span class="icon">📝</span> Log Writer → State Transition Emitter</div>
+          <div class="card-body">
+            Writes <strong>session_id + source_files + timestamp</strong> to raw.ingestion_log<br>
+            <div class="rule">State transition fires ONLY after log write confirmed</div>
+            <div class="rule">Emits <strong>EMPTY → UPLOADED</strong> signal to State Machine</div>
+          </div>
+        </div>
+        <div class="data-store">
+          <div class="ds-title">🗃 RAW TABLES</div>
+          raw.telemetry<br>raw.cost_management<br>raw.iam · raw.billing · raw.erp<br>raw.ingestion_log
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow-connector">
+    <div class="arrow-line">
+      <span class="arrow-label">EMPTY → UPLOADED · session_id carried forward</span>
+      <svg width="20" height="16" viewBox="0 0 20 16" class="arrow-svg" fill="none">
+        <path d="M10 0 L10 12 M4 7 L10 14 L16 7" stroke="#30363d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- PHASE 2 — ANALYSIS                             -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <div class="phase phase-2">
+    <div class="phase-label">
+      <div class="num">Phase 02</div>
+      <div class="name">Analysis<br>Dispatch</div>
+      <div class="state-badge">UPLOADED → ANALYZED</div>
+    </div>
+    <div class="phase-body">
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-blue">UI — View 1 Footer</span>
+          <div class="card-title"><span class="icon">▶</span> [Analyze] Button Click</div>
+          <div class="card-body">
+            Active only in UPLOADED state<br>
+            <div class="rule">State Machine checks <strong>analysis_status ≠ ANALYZING</strong> before dispatching (server-side guard)</div>
+            <div class="rule">Sets <strong>analysis_status = ANALYZING</strong> → locks button in UI</div>
+          </div>
+        </div>
+        <div class="card">
+          <span class="card-tag tag-purple">State Machine</span>
+          <div class="card-title"><span class="icon">⚡</span> Analysis Dispatcher</div>
+          <div class="card-body">
+            Emits <strong>run_signal + session_id</strong> to both engines in parallel<br>
+            <div class="rule">ACK contract — re-dispatches if engine doesn't ACK within timeout</div>
+            <div class="rule">DISPATCHED or FAIL (engine unreachable)</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-divider"><span>parallel engine execution</span></div>
+
+      <div class="parallel-wrapper">
+        <!-- Allocation Engine -->
+        <div class="parallel-group">
+          <div class="parallel-label">Allocation Engine — 11 components</div>
+          <div class="card">
+            <span class="card-tag tag-purple">Step 1–2</span>
+            <div class="card-title"><span class="icon">📊</span> Telemetry Aggregator → Billing Period Deriver</div>
+            <div class="card-body">
+              SUM gpu_hours per tenant + region + pool + date<br>
+              <div class="rule"><strong>billing_period</strong> = LEFT(date, 7) → YYYY-MM</div>
+            </div>
+          </div>
+          <div class="card">
+            <span class="card-tag tag-purple">Step 3 (parallel)</span>
+            <div class="card-title"><span class="icon">💰</span> Cost Rate Reader</div>
+            <div class="card-body">
+              Reads reserved_gpu_hours + cost_per_gpu_hour<br>
+              <div class="rule">Indexed by region + pool + date · runs in parallel</div>
+            </div>
+          </div>
+          <div class="card">
+            <span class="card-tag tag-purple">Step 4</span>
+            <div class="card-title"><span class="icon">🔗</span> IAM Resolver</div>
+            <div class="card-body">
+              LEFT JOIN on tenant_id + billing_period → raw.iam<br>
+              <div class="rule">Match → <strong>TYPE A</strong> (customer record)</div>
+              <div class="rule">No match → <strong>identity_broken</strong> · failed_tenant_id set</div>
+            </div>
+          </div>
+          <div class="card">
+            <span class="card-tag tag-purple">Step 5–6</span>
+            <div class="card-title"><span class="icon">🧱</span> Record Builders (Type A + Identity Broken)</div>
+            <div class="card-body">
+              Type A: allocation_target = tenant_id · unallocated_type = NULL<br>
+              IB: allocation_target = 'unallocated' · unallocated_type = 'identity_broken'
+            </div>
+          </div>
+          <div class="card warn-card">
+            <span class="card-tag tag-yellow">Step 7 — Structural Guarantee</span>
+            <div class="card-title"><span class="icon">⚖</span> Closure Rule Enforcer</div>
+            <div class="card-body">
+              idle = reserved − consumed per pool-day<br>
+              <div class="rule">idle &gt; 0 → force <strong>capacity_idle</strong> Type B row</div>
+              <div class="rule">idle = 0 → pool fully consumed · no row needed</div>
+              <div class="rule">idle &lt; 0 → <strong>FAIL</strong> (over-consumption detected)</div>
+              <strong>Blending is architecturally impossible after this step</strong>
+            </div>
+          </div>
+          <div class="card">
+            <span class="card-tag tag-purple">Step 8–9</span>
+            <div class="card-title"><span class="icon">🔢</span> Cost & Revenue Calculator → Grain Writer</div>
+            <div class="card-body">
+              Type A: revenue − cogs = gross_margin<br>
+              Type B: gross_margin = −cogs (never 0)<br>
+              <div class="rule">Atomic write to <strong>allocation_grain</strong> · DB ROLLBACK on fail</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Reconciliation Engine -->
+        <div class="parallel-group">
+          <div class="parallel-label">Reconciliation Engine — 8 components</div>
+          <div class="card">
+            <span class="card-tag tag-purple">Check 1 (parallel with AE)</span>
+            <div class="card-title"><span class="icon">📐</span> Capacity vs Usage</div>
+            <div class="card-body">
+              consumed vs reserved per Region × Pool × Day<br>
+              <div class="rule"><strong>FAIL</strong> if consumed &gt; reserved</div>
+              <div class="check-row"><span class="check-badge pass">PASS</span> consumed ≤ reserved</div>
+              <div class="check-row"><span class="check-badge fail">FAIL</span> telemetry over-reports or capacity under-reported</div>
+            </div>
+          </div>
+          <div class="card">
+            <span class="card-tag tag-purple">Check 2 (parallel with AE)</span>
+            <div class="card-title"><span class="icon">🪪</span> Usage vs Tenant Mapping</div>
+            <div class="card-body">
+              Every tenant_id + billing_period in telemetry must resolve in IAM<br>
+              <div class="check-row"><span class="check-badge pass">PASS</span> all pairs resolved</div>
+              <div class="check-row"><span class="check-badge fail">FAIL</span> any unresolved → identity_broken exists</div>
+            </div>
+          </div>
+          <div class="card gate-card">
+            <span class="card-tag tag-green">Check 3 — Gated on AE SUCCESS</span>
+            <div class="card-title"><span class="icon">💳</span> Computed vs Billed vs Posted</div>
+            <div class="card-body">
+              allocation_grain revenue vs Billing vs ERP<br>
+              Join: tenant_id + billing_period<br>
+              <div class="rule"><strong>FAIL-1</strong>: computed ≠ billed</div>
+              <div class="rule"><strong>FAIL-2</strong>: billed ≠ posted (FAIL-1 takes precedence)</div>
+              <div class="rule">Filter: Type A rows only · unallocated excluded</div>
+            </div>
+          </div>
+          <div class="card">
+            <span class="card-tag tag-purple">Result</span>
+            <div class="card-title"><span class="icon">📋</span> Result Aggregator → Writer</div>
+            <div class="card-body">
+              Waits for all 3 checks<br>
+              <div class="rule">Atomic write — all 3 rows or none → reconciliation_results</div>
+              <div class="rule">Signals <strong>Engine Completion Collector</strong></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-divider"><span>both engines must succeed</span></div>
+
+      <div class="row">
+        <div class="card gate-card">
+          <span class="card-tag tag-green">State Machine — Gate</span>
+          <div class="card-title"><span class="icon">🔄</span> Engine Completion Collector</div>
+          <div class="card-body">
+            Waits for both AE + RE signals within timeout<br>
+            <div class="rule">AE timeout: configurable (default seed 5 min)</div>
+            <div class="rule">RE timeout: max(5 min, AE completion + 5 min)</div>
+            <div class="rule"><strong>Both SUCCESS</strong> → writes <strong>ANALYZED</strong> to State Store</div>
+            <div class="rule">Either FAIL → state remains UPLOADED · [Analyze] reactivates (max 3 retries)</div>
+          </div>
+        </div>
+        <div class="data-store">
+          <div class="ds-title">🗃 allocation_grain</div>
+          TYPE A — customer rows<br>
+          TYPE B — capacity_idle<br>
+          TYPE B — identity_broken<br>
+          <br>
+          <div class="ds-title">🗃 reconciliation_results</div>
+          3 rows · PASS | FAIL only
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow-connector">
+    <div class="arrow-line">
+      <span class="arrow-label">UPLOADED → ANALYZED · grain + verdicts ready</span>
+      <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
+        <path d="M10 0 L10 12 M4 7 L10 14 L16 7" stroke="#30363d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- PHASE 3 — CFO REVIEW                           -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <div class="phase phase-3">
+    <div class="phase-label">
+      <div class="num">Phase 03</div>
+      <div class="name">CFO<br>Review</div>
+      <div class="state-badge">ANALYZED</div>
+    </div>
+    <div class="phase-body">
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-yellow">UI — View 2 · Zone 1</span>
+          <div class="card-title"><span class="icon">📊</span> Four KPI Cards</div>
+          <div class="card-body">
+            <strong>GPU Revenue</strong> — SUM(Type A: gpu_hours × contracted_rate)<br>
+            <strong>GPU COGS</strong> — SUM(Type A: gpu_hours × cost_per_gpu_hour)<br>
+            <strong>Idle GPU Cost</strong> — SUM(Type B: gpu_hours × cost_per_gpu_hour)<br>
+            <strong>Cost Allocation Rate</strong> — COGS / (COGS + Idle) × 100
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-yellow">UI — Zone 2 Left</span>
+          <div class="card-title"><span class="icon">🌍</span> Gross Margin by Region</div>
+          <div class="card-body">
+            GM% · Idle% · Revenue per region<br>
+            <div class="rule"><strong>HOLDING</strong> — idle ≤ 30%</div>
+            <div class="rule"><strong>AT RISK</strong> — idle &gt; 30%</div>
+            Pills: <span style="color:#f85149">■ identity_broken</span> &nbsp; <span style="color:#f78166">■ capacity_idle</span>
+          </div>
+        </div>
+        <div class="card">
+          <span class="card-tag tag-yellow">UI — Zone 2 Right</span>
+          <div class="card-title"><span class="icon">🏢</span> Gross Margin by Customer</div>
+          <div class="card-body">
+            GM% color bar per account<br>
+            <span style="color:#3fb950">■ ≥38%</span> &nbsp; <span style="color:#e3b341">■ 30–37%</span> &nbsp; <span style="color:#f78166">■ 0–29%</span> &nbsp; <span style="color:#f85149">■ &lt;0%</span><br>
+            <div class="rule"><strong>Risk FLAG</strong> if GM% &lt; 0 OR tenant in identity_broken_tenants</div>
+          </div>
+        </div>
+        <div class="card">
+          <span class="card-tag tag-yellow">UI — Zone 3</span>
+          <div class="card-title"><span class="icon">✅</span> Reconciliation Verdicts</div>
+          <div class="card-body">
+            <div class="check-row"><span class="check-badge pass">PASS</span> Capacity vs Usage</div>
+            <div class="check-row"><span class="check-badge pass">PASS</span> Usage vs Tenant Mapping</div>
+            <div class="check-row"><span class="check-badge fail">FAIL</span> Computed vs Billed vs Posted</div>
+            <br>
+            No drill-down · No variance · No correction<br>
+            FAIL surfaces session_id for escalation
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow-connector">
+    <div class="arrow-line">
+      <span class="arrow-label">CFO reviews · clicks [Approve]</span>
+      <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
+        <path d="M10 0 L10 12 M4 7 L10 14 L16 7" stroke="#30363d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- PHASE 4 — APPROVAL                             -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <div class="phase phase-4">
+    <div class="phase-label">
+      <div class="num">Phase 04</div>
+      <div class="name">CFO<br>Approval</div>
+      <div class="state-badge">ANALYZED → APPROVED</div>
+    </div>
+    <div class="phase-body">
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-green">UI — Confirmation Dialog</span>
+          <div class="card-title"><span class="icon">🛡</span> Two-Step Friction Gate</div>
+          <div class="card-body">
+            "This action is final — results locked"<br>
+            <div class="rule">[Confirm Approval] → fires ANALYZED→APPROVED signal</div>
+            <div class="rule">[Cancel] → state unchanged · CFO may re-review</div>
+          </div>
+        </div>
+        <div class="card gate-card">
+          <span class="card-tag tag-green">State Machine — Critical Path</span>
+          <div class="card-title"><span class="icon">🔐</span> Approved Result Writer</div>
+          <div class="card-body">
+            <strong>ONE atomic transaction</strong> writes both:<br>
+            (a) <strong>final.allocation_result</strong> — immutable · row_id · approved_at · session_id<br>
+            (b) <strong>write_result = SUCCESS</strong> → State Store<br>
+            <div class="rule">No split writes. If crash between two writes → export blocked permanently</div>
+            <div class="rule">Written once · no updates · no deletes permitted</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-green">State Machine</span>
+          <div class="card-title"><span class="icon">🔒</span> APPROVED Session Closer</div>
+          <div class="card-body">
+            session_status = TERMINAL<br>
+            <div class="rule">All future transition signals for this session_id → rejected</div>
+            <div class="rule">Scheduled retry if close fails (up to CLOSER_MAX_RETRIES)</div>
+          </div>
+        </div>
+        <div class="data-store">
+          <div class="ds-title">🗃 final.allocation_result</div>
+          IMMUTABLE · written once<br>
+          All grain fields + failed_tenant_id<br>
+          + row_id · approved_at · session_id<br>
+          Source for ALL export formats
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- arrow -->
+  <div class="arrow-connector">
+    <div class="arrow-line">
+      <span class="arrow-label">APPROVED · export buttons unlock</span>
+      <svg width="20" height="16" viewBox="0 0 20 16" fill="none">
+        <path d="M10 0 L10 12 M4 7 L10 14 L16 7" stroke="#30363d" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════ -->
+  <!-- PHASE 5 — EXPORT                               -->
+  <!-- ═══════════════════════════════════════════════ -->
+  <div class="phase phase-5">
+    <div class="phase-label">
+      <div class="num">Phase 05</div>
+      <div class="name">Export<br>& Delivery</div>
+      <div class="state-badge">APPROVED only</div>
+    </div>
+    <div class="phase-body">
+
+      <div class="row">
+        <div class="card gate-card">
+          <span class="card-tag tag-green">Export · Gate 1</span>
+          <div class="card-title"><span class="icon">🔑</span> APPROVED State Gate</div>
+          <div class="card-body">
+            Queries Export Gate Enforcer server-side<br>
+            <div class="rule">OPEN only if: state = APPROVED <strong>AND</strong> write_result = SUCCESS</div>
+            <div class="rule">Returns structured <strong>reason_code</strong> enum — not text</div>
+            <div class="rule">BLOCKED if state wrong · write_result NULL · write_result FAIL · state unreadable</div>
+          </div>
+        </div>
+        <div class="card">
+          <span class="card-tag tag-orange">Export · Components 2–3</span>
+          <div class="card-title"><span class="icon">📥</span> Source Reader → Metadata Appender</div>
+          <div class="card-body">
+            Reads ALL rows from <strong>final.allocation_result</strong><br>
+            Queries raw.ingestion_log by session_id<br>
+            <div class="rule">Appends <strong>session_id + source_files</strong> as last two columns on every row</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-orange">Export · Format Router</span>
+          <div class="card-title"><span class="icon">🔀</span> Format Router → Generators</div>
+          <div class="card-body">
+            Exactly one generator per request<br>
+            <div class="rule"><strong>CSV</strong> — Bash write · source_files: JSON array</div>
+            <div class="rule"><strong>Excel</strong> — xlsx skill · bold header · freeze row 1</div>
+            <div class="rule"><strong>Power BI</strong> — Bash write · source_files: pipe-delimited · no nested fields</div>
+          </div>
+        </div>
+        <div class="card gate-card">
+          <span class="card-tag tag-green">Export · Gate 2</span>
+          <div class="card-title"><span class="icon">✔</span> Output Verifier — 6 Checks</div>
+          <div class="card-body">
+            1. File exists at filepath<br>
+            2. Row count matches source<br>
+            3. Grain columns present in EXPORT_COLUMN_ORDER<br>
+            4. unallocated_type values valid enum only<br>
+            5. File readable without error<br>
+            6. session_id + source_files last · format-aware<br>
+            <div class="rule">Max 3 re-run attempts · terminal FAIL after limit</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="card">
+          <span class="card-tag tag-orange">Export · Delivery</span>
+          <div class="card-title"><span class="icon">🔗</span> File Delivery Handler</div>
+          <div class="card-body">
+            Atomic filepath handoff from Verifier Check 1<br>
+            <div class="rule">Generates <strong>computer:// link</strong> → CFO</div>
+            <div class="rule">Labels: Download CSV · Download Excel · Download Power BI</div>
+            <div class="rule">No file delivered if Verifier = FAIL</div>
+          </div>
+        </div>
+        <div class="data-store" style="border-color:#f7816644; background:#1a0e0a;">
+          <div class="ds-title" style="color:#f78166;">📤 Output Files</div>
+          gpu-margin-export-{session_id}.csv<br>
+          gpu-margin-export-{session_id}.xlsx<br>
+          gpu-margin-powerbi-{session_id}.csv<br>
+          <br>
+          All read from same approved table.<br>
+          Every row carries session_id + source_files.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div><!-- /pipeline -->
+
+<!-- Cross-Module Keys -->
+<div class="keys-panel">
+  <h2>Key Cross-Module Contracts</h2>
+  <div class="keys-grid">
+    <div class="key-item">
+      <div class="key-name">session_id</div>
+      <div class="key-desc">Generated by Ingestion Orchestrator. Carried through raw tables → allocation_grain → reconciliation_results → final.allocation_result → every export row (second-to-last column).</div>
+    </div>
+    <div class="key-item">
+      <div class="key-name">billing_period YYYY-MM</div>
+      <div class="key-desc">Enforced at IAM, Billing, ERP validators. Derived by Billing Period Deriver via LEFT(date,7). Relied on by IAM Resolver, Check 2, and Check 3 as join key.</div>
+    </div>
+    <div class="key-item">
+      <div class="key-name">failed_tenant_id</div>
+      <div class="key-desc">Set by Identity Broken Record Builder (= original tenant_id). NULL in Type A and capacity_idle rows. Used by Customer Data Aggregator to fire the Risk FLAG.</div>
+    </div>
+    <div class="key-item">
+      <div class="key-name">unallocated_type</div>
+      <div class="key-desc">capacity_idle = reserved, no job ran. identity_broken = job ran, IAM failed. Distinct at grain level, never blended. Drives Region pills and Export Verifier Check 4.</div>
+    </div>
+    <div class="key-item">
+      <div class="key-name">write_result</div>
+      <div class="key-desc">Set by Approved Result Writer → State Store in one atomic transaction with application_state = APPROVED. Read by Export Gate Enforcer. Survives State Machine restarts.</div>
+    </div>
+    <div class="key-item">
+      <div class="key-name">Closure Rule</div>
+      <div class="key-desc">SUM(gpu_hours per pool per day) = reserved_gpu_hours. Idle forced as a first-class Type B row before any aggregation. Blending is architecturally impossible.</div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,261 @@
+---
+title: GPU Gross Margin Visibility Application — Full End-to-End Architecture
+---
+
+flowchart TD
+
+    %% ═══════════════════════════════════════════════════
+    %%  SOURCE FILES
+    %% ═══════════════════════════════════════════════════
+    subgraph SRC["① SOURCE FILES"]
+        direction LR
+        F1["Telemetry & Metering"]
+        F2["Cost Management / FinOps"]
+        F3["IAM / Tenant Mgmt"]
+        F4["Billing System"]
+        F5["ERP / General Ledger"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %%  INGESTION MODULE
+    %% ═══════════════════════════════════════════════════
+    subgraph ING["② INGESTION MODULE — 19 components"]
+        direction TB
+        I_VAL["Validators × 5\nschema · type · null check · natural key\nbilling_period YYYY-MM enforced at IAM, Billing, ERP"]
+        I_PAR["Parsers × 5\ncast to typed records"]
+        I_WRT["Raw Table Writers × 5\nsession-tagged · staged · not yet active"]
+        I_ORC["Ingestion Orchestrator\ngenerates session_id before any write"]
+        I_CMT["Ingestion Commit\nSTEP 1 → drop all prior active rows (replacement)\nSTEP 2 → promote new session atomically\nFAIL → drop entire session · no partial data\nGuarantee: only one session active at a time\nSCALE: batch STEP 2 per table above row threshold\nsession-scoped fence · all-or-nothing preserved"]
+        I_LOG["Ingestion Log Writer\nraw.ingestion_log\nsession_id · source_files · timestamp"]
+        I_STE["State Transition Emitter\nEMPTY → UPLOADED signal + session_id\n→ State Machine"]
+        I_VAL --> I_PAR --> I_WRT --> I_ORC --> I_CMT --> I_LOG --> I_STE
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %%  RAW DATA STORES
+    %% ═══════════════════════════════════════════════════
+    RAW[("RAW TABLES\nraw.telemetry\nraw.cost_management\nraw.iam\nraw.billing\nraw.erp")]
+    ILOG[("raw.ingestion_log\nsession_id · source_files · timestamp")]
+
+    %% ═══════════════════════════════════════════════════
+    %%  STATE MACHINE
+    %% ═══════════════════════════════════════════════════
+    subgraph STM["STATE MACHINE — 12 components"]
+        direction TB
+        SM_SS["State Store\napplication_state: EMPTY → UPLOADED → ANALYZED → APPROVED\nanalysis_status: IDLE | ANALYZING\nsession_id · session_status · state_history"]
+        SM_TRR["Transition Request Receiver\nsingle entry point for all signals"]
+        SM_TV["Transition Validator\n3-rule table · APPROVED = terminal"]
+        SM_AD["Analysis Dispatcher\ntriggers both engines in parallel\nsets analysis_status = ANALYZING"]
+        SM_ECC["Engine Completion Collector\nrequires both engines SUCCESS\nAllocation: 5-min timeout\nRecon: max(5min, AE completion + 5min)"]
+        SM_ARW["Approved Result Writer\nwrites final.allocation_result\nimmutable · row_id · approved_at · session_id\nonce only · no updates · no deletes\nALSO writes write_result to State Store\n(SUCCESS or FAIL — persisted for Export Gate Enforcer)"]
+        SM_EGE["Export Gate Enforcer\ngates on state = APPROVED\nAND write_result = SUCCESS\nreads write_result FROM State Store\n(not from Approved Result Writer directly)\nresponds OPEN or BLOCKED"]
+        SM_SC["APPROVED Session Closer\nsession_status = TERMINAL\nblocks all further transition signals"]
+        SM_SS --> SM_TRR --> SM_TV --> SM_AD
+        SM_AD --> SM_ECC
+        SM_ECC -->|"both SUCCESS"| SM_SS
+        SM_SS -->|"APPROVED"| SM_ARW --> SM_SC
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %%  ALLOCATION ENGINE
+    %% ═══════════════════════════════════════════════════
+    subgraph AE["④ ALLOCATION ENGINE — 11 components"]
+        direction TB
+        AE_RR["Run Receiver\nvalidates run_signal + session_id"]
+        AE_TA["Telemetry Aggregator\nSUM gpu_hours per tenant + region + pool + date"]
+        AE_BP["Billing Period Deriver\nYYYY-MM truncation from date\nLEFT(date, 7)"]
+        AE_CR["Cost Rate Reader\nreserved_gpu_hours · cost_per_gpu_hour\nindexed by region + pool + date\nruns parallel with Telemetry chain"]
+        AE_IR["IAM Resolver\nLEFT JOIN telemetry on\ntenant_id + billing_period → raw.iam\nTYPE_A if match · IDENTITY_BROKEN if no match"]
+        AE_TA2["Type A Record Builder\nallocation_target = tenant_id\nunallocated_type = NULL\nfailed_tenant_id = NULL"]
+        AE_IB["Identity Broken Record Builder\nallocation_target = 'unallocated'\nunallocated_type = 'identity_broken'\nfailed_tenant_id = original tenant_id ◄ KEY FIX"]
+        AE_CL["Closure Rule Enforcer\nidle = reserved − consumed per pool-day\nidle > 0 → force capacity_idle row\n  failed_tenant_id = NULL\nidle < 0 → FAIL (consistent with Check 1)"]
+        AE_CV["Cost & Revenue Calculator\nType A: revenue = gpu_hours × contracted_rate\n        cogs = gpu_hours × cost_per_gpu_hour\n        gross_margin = revenue − cogs\nType B: revenue = 0\n        cogs = gpu_hours × cost_per_gpu_hour\n        gross_margin = −cogs  (never 0)"]
+        AE_GW["Allocation Grain Writer\natomic · session_id appended\nrollback on failure"]
+        AE_CE["Completion Emitter\n→ Engine Completion Collector (State Machine)\n→ Allocation Engine Completion Listener (Recon)"]
+        AE_RR --> AE_TA --> AE_BP --> AE_IR
+        AE_RR --> AE_CR
+        AE_CR --> AE_TA2 & AE_IB & AE_CL
+        AE_IR --> AE_TA2 & AE_IB
+        AE_TA2 & AE_IB --> AE_CL --> AE_CV --> AE_GW --> AE_CE
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %%  allocation_grain — CENTRAL DATA STORE
+    %% ═══════════════════════════════════════════════════
+    subgraph GRAIN["⑤ allocation_grain — GRAIN: Region × GPU Pool × Day × Allocation Target"]
+        direction LR
+        GR_A["TYPE A — Customer rows\nallocation_target = tenant_id\nunallocated_type = NULL\nfailed_tenant_id = NULL\nrevenue = gpu_hours × contracted_rate\ngross_margin = revenue − cogs"]
+        GR_CI["TYPE B — capacity_idle\nallocation_target = 'unallocated'\nunallocated_type = 'capacity_idle'\nfailed_tenant_id = NULL\nrevenue = 0\ngross_margin = −cogs"]
+        GR_IB["TYPE B — identity_broken\nallocation_target = 'unallocated'\nunallocated_type = 'identity_broken'\nfailed_tenant_id = original tenant_id\nrevenue = 0\ngross_margin = −cogs"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %%  RECONCILIATION ENGINE
+    %% ═══════════════════════════════════════════════════
+    subgraph RE["⑥ RECONCILIATION ENGINE — 8 components"]
+        direction TB
+        RE_RR["Run Receiver\nvalidates run_signal + session_id"]
+        RE_C1["Check 1: Capacity vs Usage\nconsumed vs reserved per Region × Pool × Day\nFAIL if consumed > reserved\nreads: raw.telemetry + raw.cost_management\nruns parallel with Allocation Engine"]
+        RE_C2["Check 2: Usage vs Tenant Mapping\nevery tenant_id + billing_period in telemetry\nmust resolve in raw.iam\nFAIL if any unresolved pair\nruns parallel with Allocation Engine"]
+        RE_ACL["Allocation Engine Completion Listener\ngates Check 3\nblocked if AE FAIL or timeout"]
+        RE_C3["Check 3: Computed vs Billed vs Posted\nper allocation_target × billing_period\nFAIL-1: computed ≠ billed\nFAIL-2: billed ≠ posted\nFAIL-1 takes precedence if both\nreads: allocation_grain + raw.billing + raw.erp"]
+        RE_AGG["Result Aggregator\nwaits for all 3 checks"]
+        RE_WRT["Result Writer\natomic — all 3 rows or none"]
+        RE_CE["Completion Emitter\n→ Engine Completion Collector (State Machine)"]
+        RE_RR --> RE_C1 & RE_C2
+        RE_C1 & RE_C2 --> RE_AGG
+        RE_ACL --> RE_C3 --> RE_AGG
+        RE_ACL -->|"timing signal\nt_ae_complete"| RE_AGG
+        RE_AGG --> RE_WRT --> RE_CE
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %%  reconciliation_results
+    %% ═══════════════════════════════════════════════════
+    RRES[("reconciliation_results\n3 rows — PASS | FAIL only\nCapacity vs Usage\nUsage vs Tenant Mapping\nComputed vs Billed vs Posted\nfailing_count + detail: internal only")]
+
+    %% ═══════════════════════════════════════════════════
+    %%  CACHE ARTIFACTS — IMMUTABLE · pre-computed at ANALYZED
+    %% ═══════════════════════════════════════════════════
+    KPI_CACHE[("dbo.kpi_cache\nIMMUTABLE · pre-computed at ANALYZED\nFive Zone 1 KPI values per session_id\nTR_kpi_cache_prevent_mutation (THROW 51001 · R11-W-1)")]
+    IBT[("dbo.identity_broken_tenants\nIMMUTABLE · pre-computed at ANALYZED\nRisk flag SET: failed_tenant_id values per session_id\nTR_identity_broken_tenants_prevent_mutation (THROW 51002 · R11-W-2)")]
+
+    %% ═══════════════════════════════════════════════════
+    %%  UI SCREEN MODULE
+    %% ═══════════════════════════════════════════════════
+    subgraph UI["⑦ UI SCREEN MODULE — 14 components"]
+        direction TB
+        UI_SR["Screen Router\nstate ∈ {EMPTY, UPLOADED} → VIEW 1\nstate ∈ {ANALYZED, APPROVED} → VIEW 2"]
+        subgraph UI_V1["VIEW 1 — Import Screen"]
+            UI_V1R["5 Upload Slots\nTelemetry · Cost Mgmt · IAM · Billing · ERP\n[Analyze] LOCKED in EMPTY · ACTIVE in UPLOADED"]
+        end
+        subgraph UI_V2["VIEW 2 — Analysis Screen"]
+            UI_KPI["KPI Data Aggregator → Zone 1\nGPU Revenue = SUM(A.gpu_hours × contracted_rate)\nGPU COGS = SUM(A.gpu_hours × cost_per_gpu_hour)\nIdle GPU Cost = SUM(B.gpu_hours × cost_per_gpu_hour)\nCost Allocation Rate = GPU COGS / (COGS + Idle) × 100"]
+            UI_REG["Region Data Aggregator → Zone 2L\nGM% · Idle% · Revenue per region\nHOLDING (idle ≤ 30%) · AT RISK (idle > 30%)\nidentity_broken pill (red)\ncapacity_idle pill (orange)"]
+            UI_CUS["Customer Data Aggregator → Zone 2R\nGM% bar (red <0% · orange 0-29% · yellow 30-37% · green ≥38%)\nRisk FLAG if GM%<0\n  OR allocation_target ∈ identity_broken_tenants\nidentity_broken_tenants built from failed_tenant_id field"]
+            UI_Z3["Reconciliation Result Reader → Zone 3\n3 rows · PASS (green) | FAIL (red)\nno drill-down · no variance · no correction"]
+            UI_FTR["View 2 Footer Control Manager\nANALYZED: [Approve] ACTIVE · exports LOCKED\nAPPROVED: [Approve] DEACTIVATED · exports ACTIVE"]
+            UI_ACD["Approve Confirmation Dialog\n'This action is final — results locked'\n[Confirm Approval] → ANALYZED→APPROVED signal → State Machine\n[Cancel] → state unchanged"]
+        end
+        UI_SR --> UI_V1 & UI_V2
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %%  final.allocation_result
+    %% ═══════════════════════════════════════════════════
+    FAR[("final.allocation_result\nIMMUTABLE · written once at APPROVED\nAll allocation_grain fields\n+ failed_tenant_id · row_id · approved_at · session_id\n3 filtered UNIQUE grain natural key indexes (R7-W-1)\nTR_final_allocation_result_prevent_mutation (THROW 51000)\nSource for ALL three export formats")]
+
+    %% ═══════════════════════════════════════════════════
+    %%  EXPORT MODULE
+    %% ═══════════════════════════════════════════════════
+    subgraph EXP["⑧ EXPORT MODULE — 9 components"]
+        direction TB
+        EX_SG["APPROVED State Gate\nqueries Export Gate Enforcer before any read\nBLOCKED if state ≠ APPROVED or write ≠ SUCCESS"]
+        EX_SR["Export Source Reader\nreads ALL rows from final.allocation_result\ncarries session_id forward"]
+        EX_MA["Session Metadata Appender\nqueries raw.ingestion_log WHERE session_id = X\nappends session_id + source_files to every row\nlast two columns in all formats"]
+        EX_FR["Format Router\ndispatches to exactly one generator per request"]
+        EX_CSV["CSV Generator\nBash write\nsource_files: JSON array"]
+        EX_XLS["Excel Generator\nxlsx skill\nbold header · freeze row 1\nsource_files: JSON array"]
+        EX_PBI["Power BI Flat CSV Generator\nBash write · no nested fields\nsource_files: pipe-delimited string\nno brackets · no quotes"]
+        EX_OV["Output Verifier — 6 checks\n1. file exists at filepath\n2. row count matches source\n3. grain columns present\n4. unallocated_type column present\n5. file readable\n6. session_id + source_files last · format-aware"]
+        EX_DH["File Delivery Handler\ncomputer:// link → CFO\nlabel: Download CSV | Excel | Power BI"]
+        EX_SG --> EX_SR --> EX_MA --> EX_FR
+        EX_FR --> EX_CSV & EX_XLS & EX_PBI
+        EX_CSV & EX_XLS & EX_PBI --> EX_OV --> EX_DH
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %%  EXPORT OUTPUT
+    %% ═══════════════════════════════════════════════════
+    subgraph OUT["⑨ EXPORT OUTPUT — all read from same approved table"]
+        direction LR
+        O_CSV["gpu-margin-export-{session_id}.csv"]
+        O_XLS["gpu-margin-export-{session_id}.xlsx"]
+        O_PBI["gpu-margin-powerbi-{session_id}.csv"]
+    end
+
+    %% ═══════════════════════════════════════════════════
+    %%  MAIN FLOW CONNECTIONS
+    %% ═══════════════════════════════════════════════════
+
+    %% Source → Ingestion
+    SRC -->|"5 CSV uploads via UI slots"| ING
+
+    %% Ingestion → Raw Tables
+    ING -->|"validated · parsed · session-tagged rows\natomic promote on SUCCESS"| RAW
+    I_LOG -->|"writes session_id + source_files"| ILOG
+
+    %% Ingestion → State Machine
+    I_STE -->|"EMPTY → UPLOADED signal\nsession_id"| SM_TRR
+
+    %% State Machine → Engines (via Analysis Dispatcher)
+    SM_AD -->|"run_signal + session_id"| AE_RR
+    SM_AD -->|"run_signal + session_id"| RE_RR
+
+    %% Raw Tables → Allocation Engine
+    RAW -->|"raw.telemetry"| AE_TA
+    RAW -->|"raw.cost_management"| AE_CR
+    RAW -->|"raw.iam"| AE_IR
+
+    %% Raw Tables → Reconciliation Engine
+    RAW -->|"raw.telemetry + raw.cost_management"| RE_C1
+    RAW -->|"raw.telemetry + raw.iam"| RE_C2
+    RAW -->|"raw.billing + raw.erp"| RE_C3
+
+    %% Allocation Engine → grain + signals
+    AE_GW -->|"writes atomically"| GRAIN
+    AE_CE -->|"SUCCESS signal"| SM_ECC
+    AE_CE -->|"SUCCESS signal"| RE_ACL
+
+    %% Reconciliation Engine → results + signal
+    RE_WRT -->|"writes 3 rows atomically"| RRES
+    RE_CE -->|"SUCCESS signal"| SM_ECC
+
+    %% grain → Reconciliation Check 3
+    GRAIN -->|"allocation_grain\nbilling_period field\nallocation_target × billing_period"| RE_C3
+
+    %% Engine Completion → State transition
+    SM_ECC -->|"both SUCCESS\nUPLOADED → ANALYZED"| SM_SS
+
+    %% grain → ANALYZED-time cache pre-computation (writes)
+    GRAIN -->|"pre-computes at ANALYZED\nKPI Data Aggregator writes 5 Zone 1 KPIs"| KPI_CACHE
+    GRAIN -->|"pre-computes at ANALYZED\nSET pre-builder writes failed_tenant_id rows"| IBT
+
+    %% cache artifacts + grain → UI (render-time reads)
+    KPI_CACHE -->|"reads at render · Zone 1 KPI Card Renderer"| UI_KPI
+    GRAIN -->|"reads at render · Zone 2L Region aggregator"| UI_REG
+    GRAIN -->|"reads at render · Zone 2R GM% aggregator"| UI_CUS
+    IBT -->|"reads at render · Zone 2R Risk flag SET lookup"| UI_CUS
+    RRES -->|"reads 3 verdict rows"| UI_Z3
+
+    %% State → UI controls
+    SM_SS -->|"application_state"| UI_SR
+    SM_SS -->|"ANALYZED: [Approve] ACTIVE"| UI_FTR
+
+    %% CFO approval → State Machine
+    UI_ACD -->|"ANALYZED → APPROVED signal\nsource = APPROVAL_DIALOG"| SM_TRR
+
+    %% State Machine → Approved Result Writer → final table
+    SM_ARW -->|"writes immutable table"| FAR
+    SM_ARW -->|"write_result = SUCCESS"| SM_SC
+    SM_EGE -->|"OPEN response"| EX_SG
+
+    %% Export: state gate → source → metadata → output
+    FAR -->|"reads all approved rows"| EX_SR
+    ILOG -->|"source_files lookup by session_id"| EX_MA
+
+    %% Export output
+    EX_DH -->|"delivers via computer:// link"| OUT
+
+    %% ═══════════════════════════════════════════════════
+    %%  CROSS-MODULE DEPENDENCY ANNOTATIONS
+    %% ═══════════════════════════════════════════════════
+
+    subgraph KEYS["KEY CROSS-MODULE CONTRACTS"]
+        direction LR
+        K1["session_id\nGenerated: Ingestion Orchestrator\nCarried: raw tables → allocation_grain\n→ reconciliation_results → final.allocation_result\n→ export rows (second-to-last column)\nUsed as WHERE filter: Telemetry Aggregator · Cost Rate Reader\n· Check 1 · Check 2 (defense in depth)"]
+        K2["billing_period YYYY-MM\nEnforced: IAM · Billing · ERP validators\nDerived: Billing Period Deriver (LEFT(date,7))\nRelied on: IAM Resolver · Check 2 · Check 3"]
+        K3["failed_tenant_id\nSet: Identity Broken Record Builder\nNULL: Type A · capacity_idle rows\nUsed: Customer Data Aggregator\nRisk FLAG if allocation_target ∈ identity_broken_tenants"]
+        K4["unallocated_type\ncapacity_idle: reserved · no job ran\nidentity_broken: job ran · IAM failed\nDistinct at grain level · never blended\nRegion pills · Export Verifier Check 4"]
+        K5["write_result (FIX 4.6)\nSet: Approved Result Writer → State Store\nPersisted: State Store field (survives restarts)\nRead: Export Gate Enforcer from State Store\nRequired: state = APPROVED AND write_result = SUCCESS\nbefore Export Gate returns OPEN"]
+    end

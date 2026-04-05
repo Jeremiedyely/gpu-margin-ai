@@ -1,0 +1,7 @@
+celery[redis]
+fastapi>=0.100,<1.0
+uvicorn[standard]>=0.20
+pydantic>=2.0,<3.0
+sqlalchemy>=2.0,<3.0
+pyodbc>=5.0
+pytest>=7.0

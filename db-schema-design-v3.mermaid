@@ -1,0 +1,261 @@
+---
+title: GPU Gross Margin Visibility — Architecture View · 6 Modules · 13 Tables · 4 Phase Gates
+---
+
+flowchart LR
+
+    %% ══════════════════════════════════════════════════════════
+    %%  PHASE 1 — INGESTION
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph P1["① INGEST"]
+        direction TB
+
+        IL(["raw.ingestion_log
+        ──────────────────
+        PK  session_id  GUID
+            status      COMMITTED | FAILED
+        ──────────────────
+        K1 anchor · all 12 FKs"])
+
+        subgraph RAW["RAW SOURCE TABLES"]
+            direction TB
+            T["raw.telemetry
+            region · pool · date
+            tenant_id · gpu_hours_consumed"]
+
+            CM["raw.cost_management
+            region · pool · date
+            reserved_gpu_hours · cost_per_gpu_hour
+            UQ(session+region+pool+date)"]
+
+            IAM["raw.iam
+            tenant_id · billing_period K2
+            contracted_rate ≥ 0
+            UQ(session+tenant+period)"]
+
+            BIL["raw.billing
+            tenant_id · billing_period
+            billable_amount  ⚠ R12-W-1
+            UQ(session+tenant+period)"]
+
+            ERP["raw.erp
+            tenant_id · billing_period
+            amount_posted  ⚠ R12-W-1
+            UQ(session+tenant+period)"]
+        end
+
+        IL -->|"session_id FK × 5"| RAW
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  STATE MACHINE (vertical spine)
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph SM["⚙ STATE MACHINE"]
+        direction TB
+        SS["dbo.state_store
+        ──────────────────
+        PK+FK  session_id
+               application_state
+               EMPTY→UPLOADED
+               →ANALYZED→APPROVED
+               session_status
+               analysis_status
+               write_result  K5
+               retry_count ≤ 100"]
+
+        SH["dbo.state_history
+        ──────────────────
+        Append-only audit
+        from → to · trigger
+        transitioned_at"]
+
+        SS -->|"append on every transition"| SH
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  PHASE 2 — ANALYSIS
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph P2["② ANALYZE"]
+        direction TB
+
+        subgraph AE["ALLOCATION ENGINE"]
+            direction TB
+            AG["dbo.allocation_grain
+            ──────────────────────────────
+            Grain: Region × Pool × Day × Target
+            ──────────────────────────────
+            session_id  FK
+            region · gpu_pool_id · date
+            billing_period        K2
+            allocation_target     TypeA | TypeB
+            unallocated_type      NULL|capacity_idle|identity_broken
+            failed_tenant_id      IB only  K3
+            gpu_hours  cost_per_gpu_hour
+            contracted_rate       NULL TypeB
+            revenue  cogs  gross_margin
+            ──────────────────────────────
+            13 CHKs · 3 filtered UNIQUEs C-3
+            ⛔ INSTEAD OF UPDATE → THROW 51003
+            INSERT-only · DELETE for session replace"]
+        end
+
+        subgraph CACHE["CACHE ARTIFACTS  ·  computed at ANALYZED"]
+            direction LR
+            KC["dbo.kpi_cache
+            ──────────────
+            PK+FK session_id
+            gpu_revenue
+            gpu_cogs
+            idle_gpu_cost
+            idle_gpu_cost_pct
+            cost_allocation_rate
+            computed_at  R15-REC-1
+            ──────────────
+            ⛔ THROW 51001"]
+
+            IBT["dbo.identity_broken_tenants
+            ──────────────
+            PK session_id
+            PK failed_tenant_id
+            IB SET · Zone 2R
+            K3 risk flag lookup
+            ──────────────
+            ⛔ THROW 51002"]
+        end
+
+        subgraph RE["RECONCILIATION ENGINE"]
+            direction TB
+            RR["dbo.reconciliation_results
+            ──────────────────────────────
+            session_id  FK
+            check_name  · verdict PASS|FAIL
+            fail_subtype  FAIL-1|FAIL-2
+            failing_count  operator only
+            detail         operator only
+            ──────────────────────────────
+            UQ(session+check) · 3 rows/session
+            Check 1: Capacity vs Usage
+            Check 2: Usage vs Tenant Mapping
+            Check 3: Computed vs Billed vs Posted"]
+        end
+
+        AG -->|"SUM aggregate\nKPI Aggregator"| KC
+        AG -->|"IB SET builder\nidentity_broken rows"| IBT
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  PHASE 3 — APPROVAL
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph P3["③ APPROVE  ·  CFO Gate"]
+        direction TB
+        FAR["final.allocation_result
+        ────────────────────────────────────
+        PK  id
+        UK  row_id  NEWSEQUENTIALID
+        FK  session_id
+            approved_at  DB write time W-11
+        ── VERBATIM COPY of dbo.allocation_grain ──
+            region · gpu_pool_id · date
+            billing_period · allocation_target
+            unallocated_type · failed_tenant_id
+            gpu_hours · cost_per_gpu_hour
+            contracted_rate · revenue
+            cogs · gross_margin
+        ────────────────────────────────────
+        13 CHKs W-9 · 3 filtered UNIQUEs R7-W-1
+        ⛔ INSTEAD OF UPDATE+DELETE → THROW 51000
+        Sole writer: SM Result Writer C9
+        Atomic with APPROVED state write"]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  PHASE 4 — EXPORT
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph P4["④ EXPORT"]
+        direction TB
+        EX["Export Source Reader
+        ────────────────────
+        CSV · Excel · ERP push
+        Reads ONLY final.allocation_result
+        K7: 13 grain columns
+        infra columns excluded
+        Export Gate:
+        APPROVED + write_result=SUCCESS
+        BOTH required  K5"]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  UI READ LAYER
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph UI["🖥  UI  ·  READ-ONLY at ANALYZED"]
+        direction TB
+        Z1["Zone 1
+        KPI Summary
+        ← kpi_cache"]
+
+        Z2["Zone 2L + 2R
+        Allocation Detail
+        + IB Risk Flag
+        ← grain + IBT"]
+
+        Z3["Zone 3
+        Reconciliation
+        PASS/FAIL badges
+        ← recon_results"]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  PHASE GATE EDGES
+    %% ══════════════════════════════════════════════════════════
+
+    P1       -->|"INGESTION_COMPLETE\nUPLOADED state"| SM
+    SM       -->|"ANALYSIS_DISPATCHED\ngate to ANALYZE"| P2
+    T        -->|"GROUP BY tenant+pool+date\nAE Telemetry Aggregator"| AG
+    CM       -->|"lookup pool+date\ncost_per_gpu_hour"| AG
+    IAM      -->|"LEFT JOIN tenant+period K2\ncontracted_rate"| AG
+    AG       -->|"SUM(revenue)\nRE Check 3"| RR
+    BIL      -->|"billable_amount\nRE Check 3 FAIL-1"| RR
+    ERP      -->|"amount_posted\nRE Check 3 FAIL-2"| RR
+    T        -->|"Check 1+2 input"| RR
+    CM       -->|"reserved_gpu_hours\nCheck 1"| RR
+    IAM      -->|"tenant set\nCheck 2"| RR
+    SM       -->|"ENGINES_COMPLETE\ngate"| RE
+    P2       -->|"CFO_APPROVAL\nAPPROVED state"| SM
+    AG       -->|"verbatim copy\nSM Result Writer C9\natomic transaction"| FAR
+    SM       -->|"write_result K5\nExport Gate"| P4
+    FAR      -->|"sole export source\nall 3 formats"| EX
+    KC       -->|"Zone 1 feed"| Z1
+    AG       -->|"grain display"| Z2
+    IBT      -->|"Zone 2R risk"| Z2
+    RR       -->|"PASS/FAIL display"| Z3
+    IL       -->|"session_id FK"| SM
+
+    %% ══════════════════════════════════════════════════════════
+    %%  STYLING
+    %% ══════════════════════════════════════════════════════════
+
+    classDef anchor  fill:#1e1b4b,stroke:#6366f1,color:#c7d2fe
+    classDef raw     fill:#0c1a2e,stroke:#0ea5e9,color:#bae6fd
+    classDef grain   fill:#052e1c,stroke:#10b981,color:#a7f3d0
+    classDef recon   fill:#1c1100,stroke:#f59e0b,color:#fde68a
+    classDef state   fill:#1f0a14,stroke:#ec4899,color:#fbcfe8
+    classDef final   fill:#1c0707,stroke:#ef4444,color:#fecaca
+    classDef cache   fill:#150d2e,stroke:#a78bfa,color:#ddd6fe
+    classDef ui      fill:#0f172a,stroke:#94a3b8,color:#e2e8f0
+    classDef export  fill:#0f172a,stroke:#64748b,color:#cbd5e1
+
+    class IL anchor
+    class T,CM,IAM,BIL,ERP raw
+    class AG grain
+    class RR recon
+    class SS,SH state
+    class FAR final
+    class KC,IBT cache
+    class Z1,Z2,Z3 ui
+    class EX export

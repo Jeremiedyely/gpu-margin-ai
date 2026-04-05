@@ -1,0 +1,387 @@
+---
+title: GPU Gross Margin Visibility — Workflow · Swimlane View · 4 Actors · 4 Phase Gates
+---
+
+flowchart TD
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: CFO / USER
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph CFO["👤 CFO / USER"]
+        direction TB
+        U1["Upload 5 source files
+        Telemetry · Cost Mgmt
+        IAM · Billing · ERP"]
+
+        U2["View Analysis Screen
+        Zone 1 KPIs
+        Zone 2L Regions
+        Zone 2R Customers
+        Zone 3 Reconciliation"]
+
+        U3{{"Review results
+        APPROVE or HOLD?"}}
+
+        U4["Click Confirm Approval
+        'This action is final'"]
+
+        U5["Download Export
+        CSV · Excel · Power BI"]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: INGESTION MODULE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph ING["② INGESTION MODULE · 19 components"]
+        direction TB
+        I1["Ingestion Orchestrator
+        generate session_id K1"]
+
+        I2["Validators × 5
+        schema · type · null
+        natural key
+        billing_period YYYY-MM"]
+
+        I3{{"All 5 files
+        valid?"}}
+
+        I4["Parsers × 5
+        cast to typed records"]
+
+        I5["Raw Table Writers × 5
+        session-tagged · staged"]
+
+        I6["Ingestion Commit
+        STEP 1: drop prior active rows
+        STEP 2: promote new session atomic
+        one active session guarantee"]
+
+        I7["Ingestion Log Writer
+        raw.ingestion_log
+        session_id · source_files"]
+
+        I8["State Transition Emitter
+        EMPTY → UPLOADED signal"]
+
+        IFAIL(["❌ FAIL
+        drop entire session
+        no partial data"])
+
+        I1 --> I2 --> I3
+        I3 -->|"YES"| I4 --> I5 --> I6 --> I7 --> I8
+        I3 -->|"NO"| IFAIL
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: STATE MACHINE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph SM["⚙ STATE MACHINE · Lifecycle Spine · 12 components"]
+        direction TB
+        SM1[["EMPTY
+        initial state"]]
+
+        G1{{"GATE 1
+        signal received?
+        EMPTY → UPLOADED"}}
+
+        SM2[["UPLOADED
+        Analysis Dispatcher
+        triggers AE ‖ RE in parallel
+        analysis_status = ANALYZING"]]
+
+        SM3["Engine Completion Collector
+        requires BOTH engines SUCCESS
+        AE timeout: 5 min
+        RE timeout: max(5min · AE+5min)"]
+
+        G2{{"GATE 2
+        BOTH engines SUCCESS?
+        UPLOADED → ANALYZED"}}
+
+        SM4[["ANALYZED
+        UI unlocks View 2
+        Approve button ACTIVE"]]
+
+        G3{{"GATE 3
+        CFO Approval received?
+        ANALYZED → APPROVED"}}
+
+        SM5["Approved Result Writer C9
+        writes final.allocation_result
+        verbatim copy of grain
+        atomic with APPROVED write
+        write_result → State Store K5"]
+
+        SM6[["APPROVED
+        session_status = TERMINAL
+        exports ACTIVE"]]
+
+        SM7["Export Gate Enforcer
+        state = APPROVED
+        AND write_result = SUCCESS K5
+        OPEN or BLOCKED"]
+
+        SM1 --> G1
+        G1 -->|"UPLOADED"| SM2 --> SM3 --> G2
+        G2 -->|"SUCCESS"| SM4 --> G3
+        G2 -->|"FAIL or TIMEOUT"| SM2
+        G3 -->|"APPROVED"| SM5 --> SM6 --> SM7
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: ALLOCATION ENGINE (parallel track)
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph AE["④ ALLOCATION ENGINE · 11 components  ‖  runs parallel with RE"]
+        direction TB
+        AE1["Run Receiver
+        validates run_signal + session_id"]
+
+        AE2["Telemetry Aggregator
+        SUM gpu_hours
+        per tenant+region+pool+date"]
+
+        AE3["Billing Period Deriver
+        LEFT(date,7) → YYYY-MM K2"]
+
+        AE4["IAM Resolver
+        LEFT JOIN tenant+period → raw.iam
+        TYPE_A = match
+        IDENTITY_BROKEN = no match"]
+
+        AE5["Cost Rate Reader
+        cost_per_gpu_hour per pool+date
+        ‖ parallel with telemetry chain"]
+
+        AE6["Record Builders
+        Type A: allocation_target=tenant_id
+        IB:     allocation_target=unallocated
+                failed_tenant_id=original K3
+        CI:     idle = reserved − consumed
+                Closure Rule Enforcer"]
+
+        AE7["Cost & Revenue Calculator
+        TypeA: rev=hours×rate · GM=rev−cogs
+        TypeB: rev=0 · GM=−cogs (never 0)"]
+
+        AE8["Allocation Grain Writer
+        INSERT-only · atomic
+        rollback on failure
+        ⛔ INSTEAD OF UPDATE THROW 51003"]
+
+        AE9["Cache Writers at ANALYZED
+        kpi_cache ⛔ THROW 51001
+        identity_broken_tenants ⛔ THROW 51002"]
+
+        AEFAIL(["❌ ENGINE FAIL
+        signal → SM Collector
+        RE Check 3 blocked"])
+
+        AE1 --> AE2 --> AE3 --> AE4
+        AE1 --> AE5
+        AE4 & AE5 --> AE6 --> AE7 --> AE8 --> AE9
+        AE8 -->|"FAIL"| AEFAIL
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: RECONCILIATION ENGINE (parallel track)
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph RE["⑥ RECONCILIATION ENGINE · 8 components  ‖  runs parallel with AE"]
+        direction TB
+        RE1["Run Receiver
+        validates run_signal + session_id"]
+
+        RE2["Check 1: Capacity vs Usage
+        consumed vs reserved
+        Region × Pool × Day
+        FAIL if consumed gt reserved"]
+
+        RE3["Check 2: Usage vs Tenant Mapping
+        every tenant+period in telemetry
+        must resolve in raw.iam
+        FAIL if any unresolved"]
+
+        RE4["AE Completion Listener
+        gates Check 3
+        blocked until AE SUCCESS"]
+
+        RE5["Check 3: Computed vs Billed vs Posted
+        per allocation_target × billing_period K2
+        FAIL-1: computed ≠ billed
+        FAIL-2: billed ≠ posted
+        reads: grain + billing + erp"]
+
+        RE6["Result Aggregator
+        waits for all 3 checks"]
+
+        RE7["Result Writer
+        atomic — all 3 rows or none
+        dbo.reconciliation_results"]
+
+        RE8["Completion Emitter
+        → SM Engine Collector"]
+
+        RE1 --> RE2 & RE3
+        RE2 & RE3 --> RE6
+        RE4 --> RE5 --> RE6
+        RE6 --> RE7 --> RE8
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: UI MODULE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph UI["⑦ UI SCREEN MODULE · 14 components"]
+        direction TB
+        UI1["Screen Router
+        state drives view selection"]
+
+        subgraph V1["VIEW 1 — Import Screen"]
+            UI_V1["5 Upload Slots
+            [Analyze] LOCKED in EMPTY
+            ACTIVE in UPLOADED"]
+        end
+
+        subgraph V2["VIEW 2 — Analysis Screen  (ANALYZED | APPROVED)"]
+            direction LR
+            UI_Z1["Zone 1
+            KPI Summary
+            ← kpi_cache
+            GPU Revenue
+            GPU COGS
+            Idle GPU Cost
+            Cost Alloc Rate"]
+            UI_Z2L["Zone 2L
+            Region Detail
+            ← grain
+            GM% · Idle%
+            HOLDING ≤30%
+            AT RISK gt30%"]
+            UI_Z2R["Zone 2R
+            Customer Detail
+            ← grain + IBT
+            GM% bar
+            Risk FLAG K3
+            K6 zero-rate guard"]
+            UI_Z3["Zone 3
+            Reconciliation
+            ← recon_results
+            PASS | FAIL
+            no drill-down"]
+        end
+
+        UI_FTR["Footer Control Manager
+        ANALYZED: [Approve] ACTIVE · exports LOCKED
+        APPROVED: [Approve] DEACTIVATED · exports ACTIVE"]
+
+        UI_ACD["Approve Confirmation Dialog
+        'This action is final — results locked'
+        [Confirm] → APPROVED signal → SM
+        [Cancel] → no change"]
+
+        UI1 --> V1 & V2
+        V2 --> UI_FTR --> UI_ACD
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: EXPORT MODULE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph EXP["⑧ EXPORT MODULE · 9 components"]
+        direction TB
+        EX1{{"GATE 4 — Export Gate
+        state = APPROVED
+        AND write_result = SUCCESS K5
+        OPEN or BLOCKED?"}}
+
+        EX2["Export Source Reader
+        reads ALL rows
+        from final.allocation_result
+        ⛔ THROW 51000 · immutable"]
+
+        EX3["Session Metadata Appender
+        session_id + source_files
+        last two columns · all formats"]
+
+        EX4["Format Router
+        one generator per request"]
+
+        EX5["CSV Generator"]
+        EX6["Excel Generator
+        bold header · freeze row 1"]
+        EX7["Power BI CSV
+        pipe-delimited · no nesting"]
+
+        EX8["Output Verifier — 6 checks
+        1. file exists
+        2. row count matches
+        3. grain columns present
+        4. unallocated_type present K4
+        5. file readable
+        6. session_id+source_files last"]
+
+        EX9(["✅ File Delivery
+        computer:// link → CFO
+        CSV | Excel | Power BI"])
+
+        EXBLOCK(["🔒 BLOCKED
+        state ≠ APPROVED
+        or write_result ≠ SUCCESS"])
+
+        EX1 -->|"OPEN"| EX2 --> EX3 --> EX4
+        EX4 --> EX5 & EX6 & EX7
+        EX5 & EX6 & EX7 --> EX8 --> EX9
+        EX1 -->|"BLOCKED"| EXBLOCK
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  CROSS-SWIMLANE WORKFLOW EDGES
+    %% ══════════════════════════════════════════════════════════
+
+    U1      -->|"5 CSV uploads"| I1
+    I8      -->|"EMPTY → UPLOADED signal + session_id"| G1
+    SM2     -->|"run_signal + session_id"| AE1
+    SM2     -->|"run_signal + session_id"| RE1
+    AE9     -->|"SUCCESS signal"| SM3
+    AE8     -->|"SUCCESS signal"| RE4
+    RE8     -->|"SUCCESS signal"| SM3
+    SM4     -->|"application_state = ANALYZED"| UI1
+    SM4     -->|"ANALYZED state → Approve ACTIVE"| UI_FTR
+    UI_ACD  -->|"ANALYZED → APPROVED signal"| G3
+    SM6     -->|"APPROVED state → exports ACTIVE"| UI_FTR
+    SM7     -->|"OPEN response"| EX1
+    U2      -.->|"CFO reviews"| V2
+    U3      -->|"APPROVE"| U4
+    U3      -->|"HOLD"| U2
+    U4      -->|"Confirm Approval"| UI_ACD
+    U5      -.->|"downloads"| EX9
+
+    %% ══════════════════════════════════════════════════════════
+    %%  STYLING
+    %% ══════════════════════════════════════════════════════════
+
+    classDef cfo     fill:#0f172a,stroke:#f8fafc,color:#f8fafc
+    classDef ing     fill:#0c1a2e,stroke:#0ea5e9,color:#bae6fd
+    classDef sm      fill:#1f0a14,stroke:#ec4899,color:#fbcfe8
+    classDef gate    fill:#2d1f3d,stroke:#d946ef,color:#f0abfc
+    classDef ae      fill:#052e1c,stroke:#10b981,color:#a7f3d0
+    classDef re      fill:#1c1100,stroke:#f59e0b,color:#fde68a
+    classDef ui      fill:#0f172a,stroke:#94a3b8,color:#e2e8f0
+    classDef exp     fill:#0f172a,stroke:#64748b,color:#cbd5e1
+    classDef fail    fill:#450a0a,stroke:#ef4444,color:#fca5a5
+    classDef success fill:#052e1c,stroke:#22c55e,color:#86efac
+
+    class U1,U2,U3,U4,U5 cfo
+    class I1,I2,I3,I4,I5,I6,I7,I8 ing
+    class SM1,SM2,SM3,SM4,SM5,SM6,SM7 sm
+    class G1,G2,G3,EX1 gate
+    class AE1,AE2,AE3,AE4,AE5,AE6,AE7,AE8,AE9 ae
+    class RE1,RE2,RE3,RE4,RE5,RE6,RE7,RE8 re
+    class UI1,UI_V1,UI_Z1,UI_Z2L,UI_Z2R,UI_Z3,UI_FTR,UI_ACD ui
+    class EX1,EX2,EX3,EX4,EX5,EX6,EX7,EX8 exp
+    class IFAIL,AEFAIL,EXBLOCK fail
+    class EX9 success

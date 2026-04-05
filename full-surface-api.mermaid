@@ -1,0 +1,302 @@
+---
+title: GPU Gross Margin Visibility — Full API Surface · Problem: No gross margin visibility per tenant · 14 Interfaces · 4 Categories · 5 ADRs
+---
+
+flowchart LR
+
+    %% ══════════════════════════════════════════════════════════
+    %%  LEGEND — CONTRACT TYPES
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph LEG["CONTRACT TYPES  ·  CATEGORY MAP"]
+        direction LR
+        L1["TYPE 1  =  CATEGORY 1
+        Lifecycle Control
+        State Transition
+        fire-and-confirm
+        ADR-01"]
+        L2["TYPE 2  =  CATEGORY 2
+        Engine Orchestration
+        Engine Run Signal
+        dispatch-and-acknowledge
+        ADR-01 · ADR-04"]
+        L3["TYPE 3  =  CATEGORY 3
+        Data Production
+        Data Read / Write
+        write-and-confirm
+        ADR-02 · ADR-05"]
+        L4["TYPE 4  =  CATEGORY 4
+        Gate Enforcement
+        Gate Query
+        query-and-verdict
+        ADR-03"]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  LEGEND — ARCHITECTURE DECISIONS (ADR-01 to ADR-05)
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph ADR["ARCHITECTURE DECISIONS"]
+        direction TB
+        A1["ADR-01
+        SM sole lifecycle controller
+        governs ②⑪ (CAT1) · ③④⑩ (CAT2)"]
+        A2["ADR-02
+        C9 sole-writer · final.allocation_result
+        governs ⑫ · THROW 51000"]
+        A3["ADR-03
+        Export Gate: BOTH conditions K5
+        governs ⑬ · state + write_result"]
+        A4["ADR-04
+        AE fan-out not atomic
+        governs ⑧ · partial delivery risk"]
+        A5["ADR-05
+        Grain INSERT-only · THROW 51003
+        governs ⑤⑥⑦ · all AE-owned tables · no UPDATE path"]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  PHASE 1 — INGEST
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph P1["① INGEST"]
+        direction TB
+        UI_UP["UI
+        5 Upload Slots"]
+
+        ING["Ingestion Module
+        ─────────────────
+        Orchestrator → generates session_id K1
+        Validators × 5
+        Parsers × 5
+        Raw Table Writers × 5
+        Ingestion Commit
+        State Transition Emitter"]
+
+        RAW[("RAW TABLES
+        telemetry · cost_management
+        iam · billing · erp
+        + ingestion_log")]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  STATE MACHINE — CONTROL SPINE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph SM["⚙ STATE MACHINE"]
+        direction TB
+        SM_TRR["Transition Request Receiver"]
+        SM_TV["Transition Validator
+        3-rule table · APPROVED = terminal"]
+        SM_SS[["State Store
+        application_state
+        write_result  K5"]]
+        G1{{"GATE 1
+        UPLOADED"}}
+        G2{{"GATE 2
+        ANALYZED"}}
+        G3{{"GATE 3
+        APPROVED"}}
+        SM_AD["Analysis Dispatcher
+        triggers AE ‖ RE in parallel"]
+        SM_ECC["Engine Completion Collector
+        requires BOTH engines SUCCESS"]
+        SM_ARW["Approved Result Writer C9
+        atomic with APPROVED write"]
+        SM_EGE["Export Gate Enforcer
+        reads write_result from State Store  K5"]
+
+        SM_TRR --> SM_TV --> SM_SS
+        SM_SS --> G1 --> SM_AD
+        SM_ECC --> G2 --> SM_SS
+        SM_SS --> G3 --> SM_ARW
+        SM_ARW --> SM_EGE
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  PHASE 2 — ANALYZE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph P2["② ANALYZE  ·  AE ‖ RE parallel"]
+        direction TB
+
+        subgraph AE["ALLOCATION ENGINE"]
+            AE_RR["Run Receiver"]
+            AE_PROC["Aggregator → IAM Resolver
+            Cost Rate Reader
+            Record Builders
+            Closure Rule Enforcer
+            Calculator"]
+            AE_GW[("allocation_grain
+            ⛔ UPDATE → THROW 51003
+            13 CHKs · 3 filtered UNIQUEs")]
+            AE_KC[("kpi_cache
+            ⛔ THROW 51001
+            1 row per session
+            Sole writer: AE · KPI Aggregator")]
+            AE_IBT[("identity_broken_tenants
+            ⛔ THROW 51002
+            composite PK
+            Sole writer: AE · IB Builder")]
+            AE_CE["Completion Emitter
+            fan-out → SM + RE"]
+            AE_RR --> AE_PROC --> AE_GW
+            AE_GW --> AE_KC
+            AE_GW --> AE_IBT
+            AE_GW --> AE_CE
+        end
+
+        subgraph RE["RECONCILIATION ENGINE"]
+            RE_RR["Run Receiver"]
+            RE_C12["Check 1 + Check 2
+            ‖ parallel · no AE dependency"]
+            RE_ACL["AE Completion Listener
+            gates Check 3"]
+            RE_C3["Check 3
+            grain + billing + erp"]
+            RE_WRT[("reconciliation_results
+            3 rows atomic · UQ(session+check)
+            Sole writer: C7 (R10-W-1)")]
+            RE_CE["Completion Emitter → SM"]
+            RE_RR --> RE_C12
+            RE_ACL --> RE_C3
+            RE_C12 & RE_C3 --> RE_WRT --> RE_CE
+        end
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  PHASE 3 — APPROVE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph P3["③ APPROVE · CFO Gate"]
+        FAR[("final.allocation_result
+        ⛔ UPDATE+DELETE → THROW 51000
+        13 CHKs W-9 · 3 UNIQUEs R7-W-1
+        row_id NEWSEQUENTIALID
+        approved_at W-11
+        Sole writer: C9")]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  PHASE 4 — EXPORT
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph P4["④ EXPORT"]
+        EX_GATE["GATE 4
+        Export Gate Enforcer
+        state=APPROVED + write_result=SUCCESS  K5"]
+        EX_SRC["Export Source Reader
+        SELECT 13 grain columns  K7"]
+        EX_OUT["Format Router
+        CSV · Excel · Power BI"]
+        EX_GATE --> EX_SRC --> EX_OUT
+    end
+
+    UI_APPR["UI
+    Approve Dialog
+    [Confirm Approval]"]
+
+    %% ══════════════════════════════════════════════════════════
+    %%  14 INTERFACE EDGES — labeled by contract type + number
+    %% ══════════════════════════════════════════════════════════
+
+    %% TYPE 1 — State Transition (fire-and-confirm)
+    ING     -->|"②·T1  EMPTY_TO_UPLOADED
+    source: INGESTION_COMMIT
+    → ACCEPTED | REJECTED"| SM_TRR
+
+    UI_APPR -->|"⑪·T1  ANALYZED_TO_APPROVED
+    source: APPROVAL_DIALOG only
+    → ACCEPTED | SESSION_TERMINAL"| SM_TRR
+
+    %% TYPE 2 — Engine Run Signals (dispatch-and-acknowledge)
+    SM_AD   -->|"③·T2  ANALYSIS_DISPATCHED
+    → RECEIVED | DUPLICATE_RUN
+    timeout: 5 min"| AE_RR
+
+    SM_AD   -->|"④·T2  ANALYSIS_DISPATCHED
+    → RECEIVED | DUPLICATE_RUN
+    Check 1+2 start · Check 3 gated"| RE_RR
+
+    AE_CE   -->|"⑧·T2  AE_COMPLETE  fan-out
+    → SM_COLLECTOR + RE_LISTENER
+    NOT atomic · partial delivery possible"| SM_ECC
+
+    AE_CE   -->|"⑧·T2  AE_COMPLETE
+    ungates Check 3"| RE_ACL
+
+    RE_CE   -->|"⑩·T2  RE_COMPLETE
+    → RECEIVED | SM_COLLECTOR_UNREACHABLE
+    timeout: max(5min · AE+5min)"| SM_ECC
+
+    %% TYPE 3 — Data Read / Write
+    UI_UP   -->|"①·T3  FILE UPLOAD  5 files
+    → session_id generated K1
+    → RECEIVED | FILE_COUNT_MISMATCH
+    idempotent: NO · atomic: YES"| ING
+
+    AE_PROC -->|"⑤·T3  INSERT batch · atomic
+    → SUCCESS | CONSTRAINT_VIOLATION
+    → DUPLICATE_GRAIN_KEY | TRIGGER_BLOCKED 51003"| AE_GW
+
+    AE_GW   -->|"⑥·T3  INSERT · 1 row/session
+    → SUCCESS | GRAIN_NOT_FOUND
+    → DUPLICATE_SESSION | TRIGGER_BLOCKED 51001"| AE_KC
+
+    AE_GW   -->|"⑦·T3  INSERT · 0..n rows
+    zero rows valid · K3
+    → SUCCESS | TRIGGER_BLOCKED 51002"| AE_IBT
+
+    RE_C3   -.->|"reads grain  K2
+    allocation_target × billing_period"| AE_GW
+
+    RE_WRT  -->|"⑨·T3  INSERT 3 rows atomic
+    → SUCCESS | DUPLICATE_VERDICT
+    → CHECK_INCOMPLETE | AE_NOT_COMPLETE"| RE_WRT
+
+    SM_ARW  -->|"⑫·T3  INSERT verbatim grain copy
+    atomic with APPROVED state write  K5
+    → write_result → State Store
+    → SUCCESS | CONSTRAINT_VIOLATION_W9
+    → UNIQUE_VIOLATION_R7 | TRIGGER_BLOCKED 51000"| FAR
+
+    EX_SRC  -->|"⑭·T3  SELECT 13 cols K7
+    idempotent: YES · immutable table
+    → SUCCESS | ZERO_ROWS | COLUMN_SET_VIOLATION"| FAR
+
+    %% TYPE 4 — Gate Query
+    EX_GATE -->|"⑬·T4  GATE QUERY
+    → OPEN | BLOCKED
+    block_reason: STATE_NOT_APPROVED
+    WRITE_RESULT_FAIL | NULL
+    reads write_result FROM State Store  K5"| SM_EGE
+
+    %% ══════════════════════════════════════════════════════════
+    %%  STYLING
+    %% ══════════════════════════════════════════════════════════
+
+    classDef t1      fill:#1e1b4b,stroke:#818cf8,color:#e0e7ff
+    classDef t2      fill:#1c1100,stroke:#f59e0b,color:#fde68a
+    classDef t3      fill:#052e1c,stroke:#10b981,color:#a7f3d0
+    classDef t4      fill:#1c0707,stroke:#ef4444,color:#fecaca
+    classDef sm      fill:#1f0a14,stroke:#ec4899,color:#fbcfe8
+    classDef gate    fill:#2d1f3d,stroke:#d946ef,color:#f0abfc
+    classDef store   fill:#0c1a2e,stroke:#0ea5e9,color:#bae6fd
+    classDef ui      fill:#0f172a,stroke:#94a3b8,color:#e2e8f0
+    classDef legend  fill:#111827,stroke:#374151,color:#9ca3af
+    classDef adr     fill:#0c1f0c,stroke:#4ade80,color:#bbf7d0
+
+    class L1 t1
+    class L2 t2
+    class L3 t3
+    class L4 t4
+    class SM_TRR,SM_TV,SM_SS,SM_AD,SM_ECC,SM_ARW,SM_EGE sm
+    class G1,G2,G3,EX_GATE gate
+    class AE_GW,AE_KC,AE_IBT,RE_WRT,FAR,RAW store
+    class UI_UP,UI_APPR ui
+    class AE_PROC t3
+    class AE_RR,AE_CE t2
+    class RE_RR,RE_C12,RE_ACL,RE_C3,RE_CE t2
+    class ING t3
+    class EX_SRC,EX_OUT t3
+    class A1,A2,A3,A4,A5 adr

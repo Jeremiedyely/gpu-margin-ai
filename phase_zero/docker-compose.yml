@@ -1,0 +1,97 @@
+services:
+
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: gpu_margin_db
+    platform: linux/amd64
+    env_file:
+      - .env
+    environment:
+      ACCEPT_EULA: "Y"
+      SA_PASSWORD: "${DB_SA_PASSWORD}"
+      MSSQL_PID: "Developer"
+    ports:
+      - "1433:1433"
+    volumes:
+      - sqlserver_data:/var/opt/mssql
+    healthcheck:
+      test: [
+        "CMD-SHELL",
+        "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"${DB_SA_PASSWORD}\" -Q \"SELECT 1\" -C -b -o /dev/null"
+      ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+
+  flyway:
+    image: flyway/flyway:9
+    container_name: gpu_margin_flyway
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./db/migrations:/flyway/sql
+    command:
+      - -url=jdbc:sqlserver://db:1433;databaseName=gpu_margin;encrypt=false
+      - -user=sa
+      - -password=${DB_SA_PASSWORD}
+      - migrate
+
+
+  redis:
+    image: redis:7-alpine
+    container_name: gpu_margin_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+
+
+  celery_worker:
+    image: gpu_margin_app
+    container_name: gpu_margin_celery_worker
+    build: .
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=4
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  celery_beat:
+    image: gpu_margin_app
+    container_name: gpu_margin_celery_beat
+    build: .
+    command: celery -A app.celery_app beat --loglevel=info
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+
+volumes:
+  sqlserver_data:
+    driver: local
+
+  redis_data:
+    driver: local

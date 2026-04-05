@@ -1,0 +1,403 @@
+---
+title: GPU Gross Margin Visibility — API Surface Workflow · Problem: No gross margin visibility per tenant per GPU pool per day · 14 Interfaces · 5 ADRs · 4 Actor Swimlanes
+---
+
+flowchart TD
+
+    %% ══════════════════════════════════════════════════════════
+    %%  LEGEND — ARCHITECTURE DECISIONS (ADR-01 to ADR-05)
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph WADR["ARCHITECTURE DECISIONS"]
+        direction LR
+        WA1["ADR-01  SM sole lifecycle controller
+        CAT 1+2 · governs ②⑪ (dispatch) · ③④⑩ (orchestration)"]
+        WA2["ADR-02  C9 SOLE WRITER · final.allocation_result
+        governs ⑫ · THROW 51000 · no other writer permitted"]
+        WA3["ADR-03  Export Gate: BOTH conditions K5
+        governs ⑬ · state=APPROVED AND write_result=SUCCESS"]
+        WA4["ADR-04  AE fan-out NOT atomic
+        governs ⑧ → SM + RE independently · partial delivery risk"]
+        WA5["ADR-05  Grain INSERT-only · THROW 51003
+        governs ⑤⑥⑦ · all AE-owned tables · no UPDATE path"]
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: CFO / USER
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph CFO["👤 CFO / USER"]
+        direction TB
+        U1["Upload 5 source files
+        Telemetry · Cost Mgmt
+        IAM · Billing · ERP"]
+
+        U2{{"All 5 files
+        valid?"}}
+
+        U3["View Analysis Screen
+        Zone 1 KPIs · Zone 2L/2R
+        Zone 3 Reconciliation"]
+
+        U4{{"Review results —
+        APPROVE or HOLD?"}}
+
+        U5["Click Confirm Approval
+        'This action is final'"]
+
+        U6["Download Export
+        CSV · Excel · Power BI"]
+
+        UFAIL(["❌ Upload error
+        re-upload required"])
+
+        U1 --> U2
+        U2 -->|"NO"| UFAIL
+        U2 -->|"YES"| U3
+        U4 -->|"HOLD"| U3
+        U4 -->|"APPROVE"| U5
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: INGESTION MODULE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph ING["INGESTION MODULE  ·  CAT 1+3  ·  ①②"]
+        direction TB
+
+        I1["①·T3  File Upload Receiver
+        ─────────────────────────────
+        INPUT:  5 files (no session_id yet)
+        ACTION: generate session_id K1
+        Validate · Parse · Write raw tables
+        Ingestion Commit: atomic promote"]
+
+        I2{{"Ingestion
+        SUCCESS?"}}
+
+        I3["②·T1  State Transition Emitter
+        ─────────────────────────────
+        signal: EMPTY_TO_UPLOADED
+        source: INGESTION_COMMIT
+        session_id K1 → State Machine"]
+
+        IFAIL(["❌ INGESTION FAIL
+        drop entire session
+        no partial data
+        → UPLOAD_INTERRUPTED"])
+
+        I1 --> I2
+        I2 -->|"YES"| I3
+        I2 -->|"NO"| IFAIL
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: STATE MACHINE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph SM["⚙ STATE MACHINE · Lifecycle Spine"]
+        direction TB
+
+        SM1["②·T1  Transition Request Receiver
+        ─────────────────────────────
+        INPUT:  session_id · EMPTY_TO_UPLOADED · source
+        VALIDATES: EMPTY → UPLOADED rule
+        WRITES:  State Store · state_history
+        RESPONSE: ACCEPTED | INVALID_TRANSITION"]
+
+        G1{{"GATE 1
+        ACCEPTED?"}}
+
+        SM2["③④·T2  Analysis Dispatcher
+        ─────────────────────────────
+        Fires ANALYSIS_DISPATCHED to AE ‖ RE
+        analysis_status = ANALYZING
+        AE timeout: 5 min
+        RE timeout: max(5min · AE+5min)"]
+
+        SM3["Engine Completion Collector
+        ─────────────────────────────
+        Waits for:
+        ⑧·T2 AE_COMPLETE signal
+        ⑩·T2 RE_COMPLETE signal
+        Requires BOTH SUCCESS"]
+
+        G2{{"GATE 2
+        BOTH engines
+        SUCCESS?"}}
+
+        SM4[["State Store
+        ANALYZED
+        [Approve] ACTIVE"]]
+
+        SM5["⑪·T1  Transition Request Receiver
+        ─────────────────────────────
+        INPUT:  session_id · ANALYZED_TO_APPROVED
+        SOURCE: APPROVAL_DIALOG only
+        VALIDATES: ANALYZED → APPROVED rule
+        RESPONSE: ACCEPTED | INVALID_TRANSITION
+                  SESSION_TERMINAL | UNAUTHORIZED_SOURCE"]
+
+        G3{{"GATE 3
+        ACCEPTED?"}}
+
+        SM6["⑫·T3  Approved Result Writer C9
+        ─────────────────────────────
+        ⚠ SOLE WRITER — ADR-02
+        INSERT verbatim grain copy → final.allocation_result
+        ATOMIC with APPROVED state write
+        write_result → State Store  K5
+        ⛔ THROW 51000 active post-write
+        → SUCCESS | CONSTRAINT_VIOLATION_W9
+        → UNIQUE_VIOLATION_R7 | TRIGGER_BLOCKED 51000"]
+
+        G4{{"GATE 3b
+        C9 write
+        SUCCESS?"}}
+
+        SM7[["State Store
+        APPROVED · write_result=SUCCESS  K5
+        session_status = TERMINAL
+        exports ACTIVE"]]
+
+        SM8[["State Store
+        write_result = FAIL  K5
+        Export Gate → BLOCKED"]]
+
+        SMFAIL(["❌ Analysis FAIL
+        or TIMEOUT
+        session remains UPLOADED"])
+
+        SM1 --> G1
+        G1 -->|"ACCEPTED"| SM2
+        G1 -->|"REJECTED"| SMFAIL
+        SM2 --> SM3 --> G2
+        G2 -->|"BOTH SUCCESS"| SM4 --> SM5 --> G3
+        G2 -->|"FAIL or TIMEOUT"| SMFAIL
+        G3 -->|"ACCEPTED"| SM6 --> G4
+        G3 -->|"REJECTED"| SM4
+        G4 -->|"SUCCESS"| SM7
+        G4 -->|"FAIL"| SM8
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: ALLOCATION ENGINE (parallel track)
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph AE["ALLOCATION ENGINE  ‖  parallel with RE  ·  CAT 2+3  ·  ③⑤⑥⑦⑧"]
+        direction TB
+
+        AE1["③·T2  Run Receiver
+        ─────────────────────────────
+        INPUT:  run_signal=ANALYSIS_DISPATCHED
+                session_id · dispatch_timestamp
+        RESPONSE: RECEIVED | DUPLICATE_RUN
+                  SESSION_INVALID | AE_UNAVAILABLE"]
+
+        AE2["Processing Chain
+        ─────────────────────────────
+        Telemetry Aggregator → Billing Period Deriver K2
+        IAM Resolver ‖ Cost Rate Reader
+        Type A Builder · IB Builder K3 · Closure Rule"]
+
+        AE3["⑤·T3  Grain Writer
+        ─────────────────────────────
+        INSERT batch · atomic · session_id
+        ⛔ UPDATE → THROW 51003
+        → SUCCESS | CONSTRAINT_VIOLATION
+        → DUPLICATE_GRAIN_KEY | TRIGGER_BLOCKED"]
+
+        AE4["⑥·T3  kpi_cache Writer
+        ─────────────────────────────
+        INSERT 1 row · SUM aggregation
+        ⛔ THROW 51001
+        → SUCCESS | GRAIN_NOT_FOUND
+        → DUPLICATE_SESSION | PCT_TOLERANCE_VIOLATION"]
+
+        AE5["⑦·T3  IBT Writer
+        ─────────────────────────────
+        INSERT 0..n rows · composite PK
+        K3: failed_tenant_id SET
+        ⛔ THROW 51002
+        → SUCCESS | DUPLICATE_IB_KEY | TRIGGER_BLOCKED"]
+
+        AE6["⑧·T2  Completion Emitter  fan-out
+        ─────────────────────────────
+        signal: AE_COMPLETE · SUCCESS | FAIL
+        → SM Engine Completion Collector
+        → RE AE Completion Listener
+        NOT atomic · partial delivery possible"]
+
+        AEFAIL(["❌ AE ENGINE FAIL
+        → CONSTRAINT_VIOLATION
+        → DUPLICATE_GRAIN_KEY
+        signal FAIL to SM + RE"])
+
+        AE1 --> AE2 --> AE3
+        AE3 -->|"SUCCESS"| AE4 --> AE5 --> AE6
+        AE3 -->|"FAIL"| AEFAIL --> AE6
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: RECONCILIATION ENGINE (parallel track)
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph RE["RECONCILIATION ENGINE  ‖  parallel with AE  ·  CAT 2+3  ·  ④⑧⑨⑩"]
+        direction TB
+
+        RE1["④·T2  Run Receiver
+        ─────────────────────────────
+        INPUT:  run_signal=ANALYSIS_DISPATCHED
+                session_id · dispatch_timestamp
+        RESPONSE: RECEIVED | DUPLICATE_RUN"]
+
+        RE2["Check 1 + Check 2  ‖ parallel
+        ─────────────────────────────
+        Check 1: Capacity vs Usage
+                 telemetry + cost_management
+        Check 2: Usage vs Tenant Mapping
+                 telemetry + iam
+        No AE dependency · start immediately"]
+
+        RE3["⑧·T2  AE Completion Listener
+        ─────────────────────────────
+        Gates Check 3
+        Blocked until AE_COMPLETE received
+        FAIL if AE FAIL or timeout"]
+
+        RE4["Check 3: Computed vs Billed vs Posted
+        ─────────────────────────────
+        grain + billing + erp
+        billing_period K2
+        FAIL-1: computed ≠ billed
+        FAIL-2: billed ≠ posted
+        FAIL-1 takes precedence"]
+
+        RE5["⑨·T3  Result Writer C7
+        ─────────────────────────────
+        ⚠ SOLE WRITER — R10-W-1
+        INSERT 3 rows atomic · UQ(session+check)
+        Format owned by C7 (R10-W-1)
+        No THROW — protected by RBAC + UQ constraint
+        failing_count + detail: operator only
+        → SUCCESS | DUPLICATE_VERDICT
+        → CHECK_INCOMPLETE | AE_NOT_COMPLETE
+        → INVALID_FAIL_SUBTYPE"]
+
+        RE6["⑩·T2  Completion Emitter
+        ─────────────────────────────
+        signal: RE_COMPLETE · SUCCESS | FAIL
+        → SM Engine Completion Collector
+        timeout: max(5min · AE+5min)"]
+
+        RE1 --> RE2
+        RE3 --> RE4
+        RE2 & RE4 --> RE5 --> RE6
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  SWIMLANE: EXPORT MODULE
+    %% ══════════════════════════════════════════════════════════
+
+    subgraph EXP["EXPORT MODULE  ·  CAT 3+4  ·  ⑬⑭"]
+        direction TB
+
+        EX1["⑬·T4  Export Gate Query
+        ─────────────────────────────
+        INPUT:  session_id
+        READS:  write_result FROM State Store  K5
+        CHECKS: state=APPROVED AND write_result=SUCCESS
+        RESPONSE: OPEN | BLOCKED
+        block_reason: STATE_NOT_APPROVED
+                      WRITE_RESULT_FAIL
+                      WRITE_RESULT_NULL
+                      SESSION_NOT_FOUND"]
+
+        G5{{"GATE 4
+        OPEN?"}}
+
+        EX2["⑭·T3  Export Source Reader
+        ─────────────────────────────
+        SELECT 13 grain columns K7 only
+        WHERE session_id = X
+        Excludes: id · row_id · approved_at
+        Table immutable ⛔ THROW 51000
+        → SUCCESS | ZERO_ROWS | COLUMN_SET_VIOLATION"]
+
+        EX3["Session Metadata Appender
+        source_files from ingestion_log
+        appended last · all formats"]
+
+        EX4["Format Router + Generators
+        CSV · Excel · Power BI
+        Output Verifier — 6 checks"]
+
+        EX5(["✅ File Delivery
+        computer:// link → CFO"])
+
+        EXBLOCK(["🔒 BLOCKED
+        STATE_NOT_APPROVED
+        or WRITE_RESULT_FAIL"])
+
+        EX1 --> G5
+        G5 -->|"OPEN"| EX2 --> EX3 --> EX4 --> EX5
+        G5 -->|"BLOCKED"| EXBLOCK
+    end
+
+    %% ══════════════════════════════════════════════════════════
+    %%  CROSS-SWIMLANE FLOW EDGES
+    %% ══════════════════════════════════════════════════════════
+
+    U1      -->|"①·T3  FILE UPLOAD"| I1
+    I2      -.->|"reports result"| U2
+    I3      -->|"②·T1  EMPTY_TO_UPLOADED"| SM1
+    SM2     -->|"③·T2  ANALYSIS_DISPATCHED"| AE1
+    SM2     -->|"④·T2  ANALYSIS_DISPATCHED"| RE1
+    AE6     -->|"⑧·T2  AE_COMPLETE → SM"| SM3
+    AE6     -->|"⑧·T2  AE_COMPLETE → RE"| RE3
+    RE6     -->|"⑩·T2  RE_COMPLETE"| SM3
+    SM4     -->|"ANALYZED state → View 2 unlocked"| U3
+    U3      -.->|"CFO reviews"| U4
+    U5      -->|"⑪·T1  ANALYZED_TO_APPROVED"| SM5
+    SM7     -->|"APPROVED · exports ACTIVE"| EX1
+    SM8     -->|"write_result=FAIL → BLOCKED"| EXBLOCK
+    EX5     -.->|"CFO downloads"| U6
+
+    %% ══════════════════════════════════════════════════════════
+    %%  STYLING
+    %% ══════════════════════════════════════════════════════════
+
+    classDef t1     fill:#1e1b4b,stroke:#818cf8,color:#e0e7ff
+    classDef t2     fill:#1c1100,stroke:#f59e0b,color:#fde68a
+    classDef t3     fill:#052e1c,stroke:#10b981,color:#a7f3d0
+    classDef t4     fill:#1c0707,stroke:#ef4444,color:#fecaca
+    classDef sm     fill:#1f0a14,stroke:#ec4899,color:#fbcfe8
+    classDef gate   fill:#2d1f3d,stroke:#d946ef,color:#f0abfc
+    classDef cfo    fill:#0f172a,stroke:#f8fafc,color:#f8fafc
+    classDef fail   fill:#450a0a,stroke:#ef4444,color:#fca5a5
+    classDef ok     fill:#052e1c,stroke:#22c55e,color:#86efac
+    classDef store  fill:#1f0a14,stroke:#ec4899,color:#fbcfe8
+    classDef wadr   fill:#0c1f0c,stroke:#4ade80,color:#bbf7d0
+
+    class WA1,WA2,WA3,WA4,WA5 wadr
+    class U1,U2,U3,U4,U5,U6 cfo
+    class I1 t3
+    class I3 t1
+    class I2 gate
+    class SM1,SM5 t1
+    class SM2 t2
+    class SM3 t2
+    class SM6 t3
+    class SM4,SM7,SM8 store
+    class G1,G2,G3,G4,G5 gate
+    class AE1 t2
+    class AE2,AE3,AE4,AE5 t3
+    class AE6 t2
+    class RE1 t2
+    class RE2,RE4,RE5 t3
+    class RE3 t2
+    class RE6 t2
+    class EX1 t4
+    class EX2,EX3,EX4 t3
+    class EX5 ok
+    class UFAIL,IFAIL,AEFAIL,EXBLOCK,SMFAIL fail
