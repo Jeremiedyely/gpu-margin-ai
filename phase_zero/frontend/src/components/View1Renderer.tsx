@@ -177,11 +177,19 @@ export function View1Renderer({
               <div className="text-sm text-slate-400 mb-6">
                 Running Allocation Engine &amp; Reconciliation Engine
               </div>
-              <div>
+              <div className="mb-6">
                 <span className="gpu-pulse-dot" />
                 <span className="gpu-pulse-dot" />
                 <span className="gpu-pulse-dot" />
               </div>
+              <button
+                className="px-6 py-2.5 rounded-xl font-semibold text-white text-sm bg-slate-300 cursor-not-allowed"
+                disabled
+                data-testid="analyze-button"
+                data-control={analyzeControl}
+              >
+                Analysis in progress...
+              </button>
             </div>
           </div>
         ) : (

@@ -23,6 +23,7 @@ export function Zone3ReconciliationRenderer({
   if (isLoading) {
     return (
       <div className="bg-white rounded-2xl shadow-md border border-slate-100 p-6" data-testid="zone3">
+        <p className="sr-only">Loading reconciliation...</p>
         <div className="h-5 bg-slate-200 rounded w-40 mb-5 animate-pulse" />
         <div className="space-y-3">
           {[1, 2, 3].map((i) => (

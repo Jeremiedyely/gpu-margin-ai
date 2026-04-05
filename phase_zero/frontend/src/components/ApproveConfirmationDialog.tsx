@@ -47,7 +47,7 @@ export function ApproveConfirmationDialog({
           className="text-xs text-slate-400 mb-6 font-mono bg-slate-50 px-3 py-1.5 rounded-lg inline-block"
           data-testid="dialog-session-id"
         >
-          Session: {sessionId}
+          Session ID: {sessionId}
         </p>
 
         <div className="flex gap-3 justify-end">
