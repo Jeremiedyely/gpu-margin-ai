@@ -70,17 +70,24 @@ def test_missing_session_id_rejected(db_connection):
     assert "session_id is required" in result.error            # TRR-02b
 
 
-# ── TRR-03: Unknown session_id rejected (no state_store row) ────────
+# ── TRR-03: No state_store row treated as EMPTY (forwards) ─────────
+#
+# When no state_store row exists, the receiver treats the session as
+# being in EMPTY state. This is the expected path for the initial
+# EMPTY → UPLOADED transition (session just committed to ingestion_log).
+# Protection against truly unknown sessions is enforced by the FK
+# constraint on dbo.state_store (session_id → raw.ingestion_log).
 
-def test_unknown_session_rejected(db_connection):
+def test_no_state_row_treated_as_empty(db_connection):
     signal = TransitionSignal(
         requested_transition="EMPTY→UPLOADED",
         source="INGESTION",
         session_id=uuid4(),
     )
     result = receive_transition_signal(db_connection, signal)
-    assert result.result == "REJECTED"                         # TRR-03a
-    assert "state unreadable" in result.error                  # TRR-03b
+    assert result.result == "FORWARD"                          # TRR-03a
+    assert result.transition_request is not None               # TRR-03b
+    assert result.transition_request.current_state == "EMPTY"  # TRR-03c
 
 
 # ── TRR-04: Valid EMPTY→UPLOADED forwarded ───────────────────────────

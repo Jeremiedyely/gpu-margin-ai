@@ -141,15 +141,12 @@ def receive_transition_signal(
         )
 
     snapshot = read_state(conn, signal.session_id)
-    if snapshot is None:
-        return ReceiverResult.rejected(
-            error=(
-                "Cannot process transition — state unreadable: "
-                f"no state_store row for session_id {signal.session_id}"
-            ),
-        )
 
-    current_state = snapshot.application_state
+    # No state_store row → session is implicitly in EMPTY state.
+    # This is the expected path for the first transition (EMPTY → UPLOADED).
+    # The Transition Validator will enforce that only valid transitions
+    # from EMPTY are allowed.
+    current_state = snapshot.application_state if snapshot else "EMPTY"
 
     # ── 3. Idempotency check (P3 #28) ──────────────────────────────
     target = _TRANSITION_TARGET.get(signal.requested_transition)

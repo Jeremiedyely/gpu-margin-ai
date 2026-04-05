@@ -1,7 +1,6 @@
 """
 Shared fixtures for Export Module tests.
 
-Same transaction-rollback + NullPool pattern as all other test suites.
 Export tests need:
 - ingestion_log row (FK parent)
 - state_store row (APPROVED + write_result=SUCCESS)
@@ -11,20 +10,13 @@ Export tests need:
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Engine, Connection
-from sqlalchemy.pool import NullPool
 
-
-DEFAULT_URL = (
-    "mssql+pyodbc://sa:1Liquidagents99!@localhost:1433"
-    "/gpu_margin?driver=ODBC+Driver+17+for+SQL+Server&encrypt=no"
-)
 
 SOURCE_FILES_FIXTURE = [
     "telemetry_metering.csv",
@@ -33,13 +25,6 @@ SOURCE_FILES_FIXTURE = [
     "billing_system.csv",
     "erp_general_ledger.csv",
 ]
-
-
-@pytest.fixture(scope="session")
-def engine() -> Engine:
-    """Create a single engine for the entire test session."""
-    url = os.environ.get("TEST_DATABASE_URL", DEFAULT_URL)
-    return create_engine(url, future=True, poolclass=NullPool)
 
 
 @pytest.fixture()

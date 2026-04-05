@@ -26,6 +26,21 @@ services:
     restart: unless-stopped
 
 
+  db_init:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: gpu_margin_db_init
+    platform: linux/amd64
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./db/init:/init
+    entrypoint: ["/bin/bash", "/init/init_db.sh"]
+    restart: "no"
+
+
   flyway:
     image: flyway/flyway:9
     container_name: gpu_margin_flyway
@@ -34,6 +49,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      db_init:
+        condition: service_completed_successfully
     volumes:
       - ./db/migrations:/flyway/sql
     command:
@@ -59,6 +76,30 @@ services:
     restart: unless-stopped
 
 
+  web:
+    image: gpu_margin_app
+    container_name: gpu_margin_web
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "${DATABASE_URL}"
+      CELERY_BROKER_URL: "${CELERY_BROKER_URL}"
+      CELERY_RESULT_BACKEND: "${CELERY_RESULT_BACKEND}"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 
   celery_worker:
     image: gpu_margin_app
@@ -67,11 +108,19 @@ services:
     command: celery -A app.celery_app worker --loglevel=info --concurrency=4
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "${DATABASE_URL}"
+      CELERY_BROKER_URL: "${CELERY_BROKER_URL}"
+      CELERY_RESULT_BACKEND: "${CELERY_RESULT_BACKEND}"
+    volumes:
+      - ./app:/app/app
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   celery_beat:
@@ -81,6 +130,10 @@ services:
     command: celery -A app.celery_app beat --loglevel=info
     env_file:
       - .env
+    environment:
+      DATABASE_URL: "${DATABASE_URL}"
+      CELERY_BROKER_URL: "${CELERY_BROKER_URL}"
+      CELERY_RESULT_BACKEND: "${CELERY_RESULT_BACKEND}"
     depends_on:
       db:
         condition: service_healthy

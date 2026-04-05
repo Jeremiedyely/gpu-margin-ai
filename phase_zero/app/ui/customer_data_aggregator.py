@@ -159,31 +159,38 @@ def aggregate_customers(
     ib_set: set[str] = {row.failed_tenant_id for row in ib_rows}
 
     # ── Step 2: Write SET to dbo.identity_broken_tenants ─────────
+    #   Guard: skip if cache already populated (prevents PK violation
+    #   when aggregate_customers is called at both analysis-time and
+    #   request-time for the same session).
     if ib_set:
-        try:
-            savepoint = conn.begin_nested()
+        existing = conn.execute(
+            _READ_IB_SET_SQL, {"sid": str(session_id)}
+        ).fetchall()
+        if not existing:
             try:
-                for tenant_id in sorted(ib_set):
-                    conn.execute(
-                        _WRITE_IB_TENANT_SQL,
-                        {"sid": str(session_id), "ftid": tenant_id},
+                savepoint = conn.begin_nested()
+                try:
+                    for tenant_id in sorted(ib_set):
+                        conn.execute(
+                            _WRITE_IB_TENANT_SQL,
+                            {"sid": str(session_id), "ftid": tenant_id},
+                        )
+                    savepoint.commit()
+                except Exception as exc:
+                    savepoint.rollback()
+                    return CustomerAggregatorResult.failed(
+                        error=(
+                            f"identity_broken_tenants cache write failed "
+                            f"for session {session_id}: {exc}"
+                        )
                     )
-                savepoint.commit()
             except Exception as exc:
-                savepoint.rollback()
                 return CustomerAggregatorResult.failed(
                     error=(
-                        f"identity_broken_tenants cache write failed "
+                        f"identity_broken_tenants savepoint failed "
                         f"for session {session_id}: {exc}"
                     )
                 )
-        except Exception as exc:
-            return CustomerAggregatorResult.failed(
-                error=(
-                    f"identity_broken_tenants savepoint failed "
-                    f"for session {session_id}: {exc}"
-                )
-            )
 
     # ── Step 3: Aggregate per-customer metrics ───────────────────
     try:
