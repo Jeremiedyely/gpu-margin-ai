@@ -197,7 +197,7 @@ phase_zero/
 
 ## Design Principle
 
-Built as a **stewardship system** — not a reporting layer, but a control mechanism. It does not just show what the numbers are. It validates that the numbers are *true* before anyone approves them, locks the result once approved, and forces a new session for any subsequent analysis. The mechanism produces the output; the output is the fruit.
+Built as a **stewardship system** — not a reporting layer, but a control mechanism. It does not just show what the numbers are. It validates that the numbers are *true* before anyone approves them, locks the result once approved, and forces a new session for any subsequent analysis.
 
 ---
 
